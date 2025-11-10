@@ -2195,6 +2195,17 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
             # On error, don't increment rownumber - rethrow the error
             raise e
 
+    def fetch_arrow_batch(self) -> Any:
+        self._check_closed()  # Check if the cursor is closed
+        if not self._has_result_set and self.description:
+            self._reset_rownumber()
+
+        capsules = []
+        ret = ddbc_bindings.DDBCSQLFetchArrowBatch(self.hstmt, capsules)
+        print(ret)
+        # assert ret is None, (ret, type(ret))
+        return capsules
+
     def nextset(self) -> Union[bool, None]:
         """
         Skip to the next available result set.
@@ -2374,6 +2385,7 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
         """
         if "closed" not in self.__dict__ or not self.closed:
             try:
+                assert self is not None
                 self.close()
             except Exception as e:  # pylint: disable=broad-exception-caught
                 # Don't raise an exception in __del__, just log it
