@@ -157,6 +157,48 @@ struct NumericData {
     }
 };
 
+#ifndef ARROW_C_DATA_INTERFACE
+#define ARROW_C_DATA_INTERFACE
+
+#define ARROW_FLAG_DICTIONARY_ORDERED 1
+#define ARROW_FLAG_NULLABLE 2
+#define ARROW_FLAG_MAP_KEYS_SORTED 4
+
+struct ArrowSchema {
+  // Array type description
+  const char* format;
+  const char* name;
+  const char* metadata;
+  int64_t flags;
+  int64_t n_children;
+  struct ArrowSchema** children;
+  struct ArrowSchema* dictionary;
+
+  // Release callback
+  void (*release)(struct ArrowSchema*);
+  // Opaque producer-specific data
+  void* private_data;
+};
+
+struct ArrowArray {
+  // Array data description
+  int64_t length;
+  int64_t null_count;
+  int64_t offset;
+  int64_t n_buffers;
+  int64_t n_children;
+  const void** buffers;
+  struct ArrowArray** children;
+  struct ArrowArray* dictionary;
+
+  // Release callback
+  void (*release)(struct ArrowArray*);
+  // Opaque producer-specific data
+  void* private_data;
+};
+
+#endif  // ARROW_C_DATA_INTERFACE
+
 //-------------------------------------------------------------------------------------------------
 // Function pointer initialization
 //-------------------------------------------------------------------------------------------------
@@ -3926,6 +3968,70 @@ SQLRETURN FetchMany_wrap(SqlHandlePtr StatementHandle, py::list& rows, int fetch
     return ret;
 }
 
+void ArrowSchema_release(struct ArrowSchema* schema) {
+    if (schema->release) {
+        schema->release = nullptr;
+    }
+}
+
+SQLRETURN FetchArrowBatch_wrap(SqlHandlePtr StatementHandle, py::list& capsules) {
+    SQLRETURN ret;
+    SQLHSTMT hStmt = StatementHandle->get();
+    // Retrieve column count
+    SQLSMALLINT numCols = SQLNumResultCols_wrap(StatementHandle);
+
+    // Retrieve column metadata
+    py::list columnNames;
+    ret = SQLDescribeCol_wrap(StatementHandle, columnNames);
+    if (!SQL_SUCCEEDED(ret)) {
+        LOG("Failed to get column descriptions");
+        return ret;
+    }
+
+    std::vector<SQLUSMALLINT> lobColumns;
+    for (SQLSMALLINT i = 0; i < numCols; i++) {
+        auto colMeta = columnNames[i].cast<py::dict>();
+        SQLSMALLINT dataType = colMeta["DataType"].cast<SQLSMALLINT>();
+        SQLULEN columnSize = colMeta["ColumnSize"].cast<SQLULEN>();
+
+        if ((dataType == SQL_WVARCHAR || dataType == SQL_WLONGVARCHAR || 
+             dataType == SQL_VARCHAR || dataType == SQL_LONGVARCHAR ||
+             dataType == SQL_VARBINARY || dataType == SQL_LONGVARBINARY || dataType == SQL_SS_XML) &&
+            (columnSize == 0 || columnSize == SQL_NO_TOTAL || columnSize > SQL_MAX_LOB_SIZE)) {
+            lobColumns.push_back(i + 1); // 1-based
+        }
+    }
+
+    assert(lobColumns.empty() && "Arrow batch fetch does not support LOB columns yet");
+
+    capsules.append(py::none());
+    capsules.append(py::str(""));
+
+    // vector of arrowschema children
+    auto children = new ArrowSchema* [1];
+    auto arrow_schema = new ArrowSchema({
+        .format = "l",
+        .name = "test_column",
+        .release = ArrowSchema_release,
+    });
+    children[0] = arrow_schema;
+    auto arrow_schema_batch = new ArrowSchema({
+        .format = "+s",
+        .name = "test_batch",
+        .n_children = 1,
+        .children = children,
+        .release = ArrowSchema_release,
+    });
+    // auto caps = py::capsule((void*)arrow_schema, "arrow_schema", nullptr);
+    auto caps = py::capsule((void*)arrow_schema_batch, "arrow_schema", [](void* ptr) {
+        delete static_cast<ArrowSchema*>(ptr);
+    });
+    capsules.append(caps);
+
+    return 0;
+}
+
+
 // FetchAll_wrap - Fetches all rows of data from the result set.
 //
 // @param StatementHandle: Handle to the statement from which data is to be
@@ -4232,6 +4338,7 @@ PYBIND11_MODULE(ddbc_bindings, m) {
     m.def("DDBCSQLFetchMany", &FetchMany_wrap, py::arg("StatementHandle"), py::arg("rows"),
           py::arg("fetchSize") = 1, "Fetch many rows from the result set");
     m.def("DDBCSQLFetchAll", &FetchAll_wrap, "Fetch all rows from the result set");
+    m.def("DDBCSQLFetchArrowBatch", &FetchArrowBatch_wrap, "Fetch an arrow batch of given length from the result set");
     m.def("DDBCSQLFreeHandle", &SQLFreeHandle_wrap, "Free a handle");
     m.def("DDBCSQLCheckError", &SQLCheckError_Wrap, "Check for driver errors");
     m.def("DDBCSQLGetAllDiagRecords", &SQLGetAllDiagRecords,
