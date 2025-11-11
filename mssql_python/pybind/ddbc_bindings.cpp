@@ -3978,6 +3978,7 @@ SQLRETURN FetchArrowBatch_wrap(SqlHandlePtr StatementHandle, py::list& capsules)
         return ret;
     }
 
+    auto batch_children = new ArrowSchema* [numCols];
     std::vector<SQLUSMALLINT> lobColumns;
     for (SQLSMALLINT i = 0; i < numCols; i++) {
         auto colMeta = columnNames[i].cast<py::dict>();
@@ -3990,26 +3991,27 @@ SQLRETURN FetchArrowBatch_wrap(SqlHandlePtr StatementHandle, py::list& capsules)
             (columnSize == 0 || columnSize == SQL_NO_TOTAL || columnSize > SQL_MAX_LOB_SIZE)) {
             lobColumns.push_back(i + 1); // 1-based
         }
+
+        assert(dataType == SQL_INTEGER && "Only INTEGER type is supported in Arrow batch fetch for now");
+
+        std::string columnName = colMeta["ColumnName"].cast<std::string>();
+        char* name_copy = strdup(columnName.c_str());
+
+        auto arrow_schema = new ArrowSchema({
+            .format = "i",
+            .name = name_copy,
+            .release = ArrowSchema_release,
+        });
+        batch_children[i] = arrow_schema;
     }
 
     assert(lobColumns.empty() && "Arrow batch fetch does not support LOB columns yet");
 
-    capsules.append(py::none());
-    capsules.append(py::str(""));
-
-    // vector of arrowschema children
-    auto children = new ArrowSchema* [1];
-    auto arrow_schema = new ArrowSchema({
-        .format = "l",
-        .name = "test_column",
-        .release = ArrowSchema_release,
-    });
-    children[0] = arrow_schema;
     auto arrow_schema_batch = new ArrowSchema({
         .format = "+s",
-        .name = "test_batch",
-        .n_children = 1,
-        .children = children,
+        .name = "",
+        .n_children = numCols,
+        .children = batch_children,
         .release = ArrowSchema_release,
     });
     // auto caps = py::capsule((void*)arrow_schema, "arrow_schema", nullptr);

@@ -2200,11 +2200,20 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
         if not self._has_result_set and self.description:
             self._reset_rownumber()
 
+        try:
+            import pyarrow as pa
+        except ImportError as e:
+            raise ImportError(
+                "pyarrow is required for fetch_arrow_batch(). Please install pyarrow."
+            ) from e
         capsules = []
         ret = ddbc_bindings.DDBCSQLFetchArrowBatch(self.hstmt, capsules)
         print(ret)
+        schema_capsule = capsules[0]
+        schema = pa.Schema._import_from_c_capsule(schema_capsule)
+
         # assert ret is None, (ret, type(ret))
-        return capsules
+        return schema, capsules
 
     def nextset(self) -> Union[bool, None]:
         """
