@@ -3965,6 +3965,7 @@ void ArrowSchema_release(struct ArrowSchema* schema) {
 }
 
 SQLRETURN FetchArrowBatch_wrap(SqlHandlePtr StatementHandle, py::list& capsules) {
+    ssize_t fetchSize = 500;
     SQLRETURN ret;
     SQLHSTMT hStmt = StatementHandle->get();
     // Retrieve column count
@@ -4020,7 +4021,299 @@ SQLRETURN FetchArrowBatch_wrap(SqlHandlePtr StatementHandle, py::list& capsules)
     });
     capsules.append(caps);
 
-    return 0;
+    // Initialize column buffers
+    ColumnBuffers buffers(numCols, fetchSize);
+
+    // Bind columns
+    ret = SQLBindColums(hStmt, buffers, columnNames, numCols, fetchSize);
+    if (!SQL_SUCCEEDED(ret)) {
+        LOG("Error when binding columns");
+        return ret;
+    }
+
+    SQLULEN numRowsFetched;
+    SQLSetStmtAttr_ptr(hStmt, SQL_ATTR_ROW_ARRAY_SIZE, (SQLPOINTER)(intptr_t)fetchSize, 0);
+    SQLSetStmtAttr_ptr(hStmt, SQL_ATTR_ROWS_FETCHED_PTR, &numRowsFetched, 0);
+
+
+
+    
+    ret = SQLFetchScroll_ptr(hStmt, SQL_FETCH_NEXT, 0);
+    if (ret == SQL_NO_DATA) {
+        LOG("No data to fetch");
+        return ret;
+    }
+    if (!SQL_SUCCEEDED(ret)) {
+        LOG("Error while fetching rows in batches");
+        return ret;
+    }
+    // numRowsFetched is the SQL_ATTR_ROWS_FETCHED_PTR attribute. It'll be populated by
+    // SQLFetchScroll
+    for (SQLULEN i = 0; i < numRowsFetched; i++) {
+        py::list row;
+        for (SQLUSMALLINT col = 1; col <= numCols; col++) {
+            auto columnMeta = columnNames[col - 1].cast<py::dict>();
+            SQLSMALLINT dataType = columnMeta["DataType"].cast<SQLSMALLINT>();
+            SQLLEN dataLen = buffers.indicators[col - 1][i];
+
+            if (dataLen == SQL_NULL_DATA) {
+                row.append(py::none());
+                continue;
+            }
+            // TODO: variable length data needs special handling, this logic wont suffice
+            // This value indicates that the driver cannot determine the length of the data
+            if (dataLen == SQL_NO_TOTAL) {
+                LOG("Cannot determine the length of the data. Returning NULL value instead."
+                    "Column ID - {}", col);
+                row.append(py::none());
+                continue;
+            } else if (dataLen == SQL_NULL_DATA) {
+                LOG("Column data is NULL. Appending None to the result row. Column ID - {}", col);
+                row.append(py::none());
+                continue;
+            } else if (dataLen == 0) {
+                // Handle zero-length (non-NULL) data
+                if (dataType == SQL_CHAR || dataType == SQL_VARCHAR || dataType == SQL_LONGVARCHAR) {
+                    row.append(std::string(""));
+                } else if (dataType == SQL_WCHAR || dataType == SQL_WVARCHAR || dataType == SQL_WLONGVARCHAR) {
+                    row.append(std::wstring(L""));
+                } else if (dataType == SQL_BINARY || dataType == SQL_VARBINARY || dataType == SQL_LONGVARBINARY) {
+                    row.append(py::bytes(""));
+                } else {
+                    // For other datatypes, 0 length is unexpected. Log & append None
+                    LOG("Column data length is 0 for non-string/binary datatype. Appending None to the result row. Column ID - {}", col);
+                    row.append(py::none());
+                }
+                continue;
+            } else if (dataLen < 0) {
+                // Negative value is unexpected, log column index, SQL type & raise exception
+                LOG("Unexpected negative data length. Column ID - {}, SQL Type - {}, Data Length - {}", col, dataType, dataLen);
+                ThrowStdException("Unexpected negative data length, check logs for details");
+            }
+            assert(dataLen > 0 && "Data length must be > 0");
+
+            switch (dataType) {
+                case SQL_CHAR:
+                case SQL_VARCHAR:
+                case SQL_LONGVARCHAR: {
+                    SQLULEN columnSize = columnMeta["ColumnSize"].cast<SQLULEN>();
+                    HandleZeroColumnSizeAtFetch(columnSize);
+                    uint64_t fetchBufferSize = columnSize + 1 /*null-terminator*/;
+					uint64_t numCharsInData = dataLen / sizeof(SQLCHAR);
+                    bool isLob = std::find(lobColumns.begin(), lobColumns.end(), col) != lobColumns.end();
+					// fetchBufferSize includes null-terminator, numCharsInData doesn't. Hence '<'
+                    if (!isLob && numCharsInData < fetchBufferSize) {
+                        // SQLFetch will nullterminate the data
+                        row.append(std::string(
+                            reinterpret_cast<char*>(&buffers.charBuffers[col - 1][i * fetchBufferSize]),
+                            numCharsInData));
+                    } else {
+                        row.append(FetchLobColumnData(hStmt, col, SQL_C_CHAR, false, false));
+                    }
+                    break;
+                }
+                case SQL_WCHAR:
+                case SQL_WVARCHAR:
+                case SQL_WLONGVARCHAR: {
+                    // TODO: variable length data needs special handling, this logic wont suffice
+                    SQLULEN columnSize = columnMeta["ColumnSize"].cast<SQLULEN>();
+                    HandleZeroColumnSizeAtFetch(columnSize);
+                    uint64_t fetchBufferSize = columnSize + 1 /*null-terminator*/;
+					uint64_t numCharsInData = dataLen / sizeof(SQLWCHAR);
+                    bool isLob = std::find(lobColumns.begin(), lobColumns.end(), col) != lobColumns.end();
+					// fetchBufferSize includes null-terminator, numCharsInData doesn't. Hence '<'
+                    if (!isLob && numCharsInData < fetchBufferSize) {
+                        // SQLFetch will nullterminate the data
+#if defined(__APPLE__) || defined(__linux__)
+                        // Use unix-specific conversion to handle the wchar_t/SQLWCHAR size difference
+                        SQLWCHAR* wcharData = &buffers.wcharBuffers[col - 1][i * fetchBufferSize];
+                        std::wstring wstr = SQLWCHARToWString(wcharData, numCharsInData);
+                        row.append(wstr);
+#else
+                        // On Windows, wchar_t and SQLWCHAR are both 2 bytes, so direct cast works
+                        row.append(std::wstring(
+                            reinterpret_cast<wchar_t*>(&buffers.wcharBuffers[col - 1][i * fetchBufferSize]),
+                            numCharsInData));
+#endif
+                    } else {
+                        row.append(FetchLobColumnData(hStmt, col, SQL_C_WCHAR, true, false));
+                    }
+                    break;
+                }
+                case SQL_INTEGER: {
+                    row.append(buffers.intBuffers[col - 1][i]);
+                    break;
+                }
+                case SQL_SMALLINT: {
+                    row.append(buffers.smallIntBuffers[col - 1][i]);
+                    break;
+                }
+                case SQL_TINYINT: {
+                    row.append(buffers.charBuffers[col - 1][i]);
+                    break;
+                }
+                case SQL_BIT: {
+                    row.append(static_cast<bool>(buffers.charBuffers[col - 1][i]));
+                    break;
+                }
+                case SQL_REAL: {
+                    row.append(buffers.realBuffers[col - 1][i]);
+                    break;
+                }
+                case SQL_DECIMAL:
+                case SQL_NUMERIC: {
+                    try {
+                        // Convert the string to use the current decimal separator
+                        std::string numStr(reinterpret_cast<const char*>(
+                            &buffers.charBuffers[col - 1][i * MAX_DIGITS_IN_NUMERIC]),
+                            buffers.indicators[col - 1][i]);
+                        
+                        // Get the current separator in a thread-safe way
+                        std::string separator = GetDecimalSeparator();
+                        
+                        if (separator != ".") {
+                            // Replace the driver's decimal point with our configured separator
+                            size_t pos = numStr.find('.');
+                            if (pos != std::string::npos) {
+                                numStr.replace(pos, 1, separator);
+                            }
+                        }
+                        
+                        // Convert to Python decimal
+                        row.append(py::module_::import("decimal").attr("Decimal")(numStr));
+                    } catch (const py::error_already_set& e) {
+                        // Handle the exception, e.g., log the error and append py::none()
+                        LOG("Error converting to decimal: {}", e.what());
+                        row.append(py::none());
+                    }
+                    break;
+                }
+                case SQL_DOUBLE:
+                case SQL_FLOAT: {
+                    row.append(buffers.doubleBuffers[col - 1][i]);
+                    break;
+                }
+                case SQL_TIMESTAMP:
+                case SQL_TYPE_TIMESTAMP:
+                case SQL_DATETIME: {
+                    row.append(py::module_::import("datetime")
+                                   .attr("datetime")(buffers.timestampBuffers[col - 1][i].year,
+                                                     buffers.timestampBuffers[col - 1][i].month,
+                                                     buffers.timestampBuffers[col - 1][i].day,
+                                                     buffers.timestampBuffers[col - 1][i].hour,
+                                                     buffers.timestampBuffers[col - 1][i].minute,
+                                                     buffers.timestampBuffers[col - 1][i].second,
+						                             buffers.timestampBuffers[col - 1][i].fraction / 1000  /* Convert back ns to µs */));
+                    break;
+                }
+                case SQL_BIGINT: {
+                    row.append(buffers.bigIntBuffers[col - 1][i]);
+                    break;
+                }
+                case SQL_TYPE_DATE: {
+                    row.append(py::module_::import("datetime")
+                                   .attr("date")(buffers.dateBuffers[col - 1][i].year,
+                                                 buffers.dateBuffers[col - 1][i].month,
+                                                 buffers.dateBuffers[col - 1][i].day));
+                    break;
+                }
+                case SQL_TIME:
+                case SQL_TYPE_TIME:
+                case SQL_SS_TIME2: {
+                    row.append(py::module_::import("datetime")
+                                   .attr("time")(buffers.timeBuffers[col - 1][i].hour,
+                                                 buffers.timeBuffers[col - 1][i].minute,
+                                                 buffers.timeBuffers[col - 1][i].second));
+                    break;
+                }
+                case SQL_SS_TIMESTAMPOFFSET: {
+                    SQLULEN rowIdx = i;
+                    const DateTimeOffset& dtoValue = buffers.datetimeoffsetBuffers[col - 1][rowIdx];
+                    SQLLEN indicator = buffers.indicators[col - 1][rowIdx];
+                    if (indicator != SQL_NULL_DATA) {
+                        int totalMinutes = dtoValue.timezone_hour * 60 + dtoValue.timezone_minute;
+                        py::object datetime = py::module_::import("datetime");
+                        py::object tzinfo = datetime.attr("timezone")(
+                            datetime.attr("timedelta")(py::arg("minutes") = totalMinutes)
+                        );
+                        py::object py_dt = datetime.attr("datetime")(
+                            dtoValue.year,
+                            dtoValue.month,
+                            dtoValue.day,
+                            dtoValue.hour,
+                            dtoValue.minute,
+                            dtoValue.second,
+                            dtoValue.fraction / 1000,  // ns → µs
+                            tzinfo
+                        );
+                        row.append(py_dt);
+                    } else {
+                        row.append(py::none());
+                    }
+                    break;
+                }
+                case SQL_GUID: {
+                    SQLLEN indicator = buffers.indicators[col - 1][i];
+                    if (indicator == SQL_NULL_DATA) {
+                        row.append(py::none());
+                        break;
+                    }
+                    SQLGUID* guidValue = &buffers.guidBuffers[col - 1][i];
+                    uint8_t reordered[16];
+                    reordered[0] = ((char*)&guidValue->Data1)[3];
+                    reordered[1] = ((char*)&guidValue->Data1)[2];
+                    reordered[2] = ((char*)&guidValue->Data1)[1];
+                    reordered[3] = ((char*)&guidValue->Data1)[0];
+                    reordered[4] = ((char*)&guidValue->Data2)[1];
+                    reordered[5] = ((char*)&guidValue->Data2)[0];
+                    reordered[6] = ((char*)&guidValue->Data3)[1];
+                    reordered[7] = ((char*)&guidValue->Data3)[0];
+                    std::memcpy(reordered + 8, guidValue->Data4, 8);
+
+                    py::bytes py_guid_bytes(reinterpret_cast<char*>(reordered), 16);
+                    py::dict kwargs;
+                    kwargs["bytes"] = py_guid_bytes;
+                    py::object uuid_obj = py::module_::import("uuid").attr("UUID")(**kwargs);
+                    row.append(uuid_obj);
+                    break;
+                }
+                case SQL_BINARY:
+                case SQL_VARBINARY:
+                case SQL_LONGVARBINARY: {
+                    SQLULEN columnSize = columnMeta["ColumnSize"].cast<SQLULEN>();
+                    HandleZeroColumnSizeAtFetch(columnSize);
+                    bool isLob = std::find(lobColumns.begin(), lobColumns.end(), col) != lobColumns.end();
+                    if (!isLob && static_cast<size_t>(dataLen) <= columnSize) {
+                        row.append(py::bytes(reinterpret_cast<const char*>(
+                                                 &buffers.charBuffers[col - 1][i * columnSize]),
+                                             dataLen));
+                    } else {
+                        row.append(FetchLobColumnData(hStmt, col, SQL_C_BINARY, false, true));
+                    }
+                    break;
+                }
+                default: {
+                    std::wstring columnName = columnMeta["ColumnName"].cast<std::wstring>();
+                    std::ostringstream errorString;
+                    errorString << "Unsupported data type for column - " << columnName.c_str()
+                                << ", Type - " << dataType << ", column ID - " << col;
+                    LOG(errorString.str());
+                    ThrowStdException(errorString.str());
+                    break;
+                }
+            }
+        }
+        capsules.append(row);
+    }
+
+
+
+
+    // Reset attributes before returning to avoid using stack pointers later
+    SQLSetStmtAttr_ptr(hStmt, SQL_ATTR_ROW_ARRAY_SIZE, (SQLPOINTER)1, 0);
+    SQLSetStmtAttr_ptr(hStmt, SQL_ATTR_ROWS_FETCHED_PTR, NULL, 0);
+
+    return ret;
 }
 
 
