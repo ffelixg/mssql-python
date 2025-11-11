@@ -2210,10 +2210,9 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
         ret = ddbc_bindings.DDBCSQLFetchArrowBatch(self.hstmt, capsules)
         print(ret)
         schema_capsule = capsules[0]
-        schema = pa.Schema._import_from_c_capsule(schema_capsule)
-
-        # assert ret is None, (ret, type(ret))
-        return schema, capsules
+        array_capsule = capsules[1]
+        batch = pa.RecordBatch._import_from_c_capsule(schema_capsule, array_capsule)
+        return batch, capsules
 
     def nextset(self) -> Union[bool, None]:
         """
