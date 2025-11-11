@@ -160,7 +160,7 @@ struct ColumnBuffersArrow {
     // std::vector<std::vector<SQL_DATE_STRUCT>> dateBuffers;
     // std::vector<std::vector<SQL_TIME_STRUCT>> timeBuffers;
     // std::vector<std::vector<SQLGUID>> guidBuffers;
-    std::vector<std::vector<SQLLEN>> indicators;
+    std::vector<std::vector<uint8_t>> valid;
     // std::vector<std::vector<DateTimeOffset>> datetimeoffsetBuffers;
 
     ColumnBuffersArrow(SQLSMALLINT numCols, int fetchSize)
@@ -177,7 +177,7 @@ struct ColumnBuffersArrow {
         //   timeBuffers(numCols),
         //   guidBuffers(numCols),
         //   datetimeoffsetBuffers(numCols),
-          indicators(numCols, std::vector<SQLLEN>(fetchSize)) {}
+          valid(numCols, std::vector<uint8_t>(fetchSize)) {}
 };
 
 #ifndef ARROW_C_DATA_INTERFACE
@@ -4059,6 +4059,9 @@ SQLRETURN FetchArrowBatch_wrap(SqlHandlePtr StatementHandle, py::list& capsules)
                 ThrowStdException(errorString.str());
                 break;
         }
+        buffersArrow.valid[i].resize(fetchSize / 64 + 1);
+        // Initialize validity bitmap to all valid
+        std::memset(buffersArrow.valid[i].data(), 0xFF, buffersArrow.valid[i].size());
     }
 
     assert(lobColumns.empty() && "Arrow batch fetch does not support LOB columns yet");
@@ -4115,7 +4118,11 @@ SQLRETURN FetchArrowBatch_wrap(SqlHandlePtr StatementHandle, py::list& capsules)
             if (dataLen == SQL_NO_TOTAL) {
                 assert(false && "Is this actually possible?");
             } else if (dataLen == SQL_NULL_DATA) {
-                assert(false && "TODO");
+                // Mark as null in validity bitmap
+                size_t bytePos = i / 8;
+                size_t bitPos = i % 8;
+                buffersArrow.valid[col - 1][bytePos] &= ~(1 << bitPos);
+                continue;
             } else if (dataLen < 0) {
                 // Negative value is unexpected, log column index, SQL type & raise exception
                 LOG("Unexpected negative data length. Column ID - {}, SQL Type - {}, Data Length - {}", col, dataType, dataLen);
@@ -4171,6 +4178,12 @@ SQLRETURN FetchArrowBatch_wrap(SqlHandlePtr StatementHandle, py::list& capsules)
         std::memcpy(data_copy, buffersArrow.intBuffers[col].data(), 
                     numRowsFetched * sizeof(int));
         arrow_array_col->buffers[1] = data_copy;
+
+        // Allocate & copy validity bitmap
+        size_t validityBitmapSize = buffersArrow.valid[col].size();
+        uint8_t* validity_copy = new uint8_t[validityBitmapSize];
+        std::memcpy(validity_copy, buffersArrow.valid[col].data(), validityBitmapSize);
+        arrow_array_col->buffers[0] = validity_copy;
 
         // TODO Make sure to free in release callback!
         arrow_array_batch->children[col] = arrow_array_col;
