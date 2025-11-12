@@ -3992,15 +3992,46 @@ SQLRETURN FetchMany_wrap(SqlHandlePtr StatementHandle, py::list& rows, int fetch
 }
 
 void ArrowSchema_release(struct ArrowSchema* schema) {
-    if (schema->release) {
-        schema->release = nullptr;
+    assert (schema != nullptr);
+    assert (schema->release != nullptr);
+    schema->release = nullptr;
+    delete[] schema->name;
+    for (int i = 0; i < schema->n_children; i++) {
+        assert (schema->children != nullptr);
+        if (schema->children[i]) {
+            schema->children[i]->release(schema->children[i]);
+            delete schema->children[i];
+        }
     }
+    delete[] schema->children;
+    delete[] schema->format;
 }
 
 void ArrowArray_release(struct ArrowArray* array) {
-    if (array->release) {
-        array->release = nullptr;
+    assert (array != nullptr);
+    assert (array->release != nullptr);
+    array->release = nullptr;
+
+    uint32_t buffers_freed = 0;
+    uint32_t current_buffer = 0;
+    while (buffers_freed < array->n_buffers) {
+        if (array->buffers[current_buffer]) {
+            delete[] array->buffers[current_buffer];
+            buffers_freed++;
+        }
+        current_buffer++;
+        assert (current_buffer <= 3);
     }
+    delete[] array->buffers;
+
+    for (int i = 0; i < array->n_children; i++) {
+        assert (array->children != nullptr);
+        assert (array->children[i] != nullptr);
+        array->children[i]->release(array->children[i]);
+        delete array->children[i];
+    }
+    delete[] array->children;
+
 }
 
 SQLRETURN FetchArrowBatch_wrap(SqlHandlePtr StatementHandle, py::list& capsules) {
@@ -4037,11 +4068,10 @@ SQLRETURN FetchArrowBatch_wrap(SqlHandlePtr StatementHandle, py::list& capsules)
         assert(dataType == SQL_INTEGER && "Only INTEGER type is supported in Arrow batch fetch for now");
 
         std::string columnName = colMeta["ColumnName"].cast<std::string>();
-        char* name_copy = strdup(columnName.c_str());
 
         auto arrow_schema = new ArrowSchema({
-            .format = "i",
-            .name = name_copy,
+            .format = strdup("i"),
+            .name = strdup(columnName.c_str()),
             .release = ArrowSchema_release,
         });
         batch_children[i] = arrow_schema;
@@ -4067,15 +4097,18 @@ SQLRETURN FetchArrowBatch_wrap(SqlHandlePtr StatementHandle, py::list& capsules)
     assert(lobColumns.empty() && "Arrow batch fetch does not support LOB columns yet");
 
     auto arrow_schema_batch = new ArrowSchema({
-        .format = "+s",
-        .name = "",
+        .format = strdup("+s"),
+        .name = strdup(""),
         .n_children = numCols,
         .children = batch_children,
         .release = ArrowSchema_release,
     });
-    // auto caps = py::capsule((void*)arrow_schema, "arrow_schema", nullptr);
     auto caps = py::capsule((void*)arrow_schema_batch, "arrow_schema", [](void* ptr) {
-        delete static_cast<ArrowSchema*>(ptr);
+        auto arrow_schema = static_cast<ArrowSchema*>(ptr);
+        if (arrow_schema->release) {
+            arrow_schema->release(arrow_schema);
+        }
+        delete arrow_schema;
     });
     capsules.append(caps);
 
@@ -4150,12 +4183,13 @@ SQLRETURN FetchArrowBatch_wrap(SqlHandlePtr StatementHandle, py::list& capsules)
 
 
 
-
+    auto arrow_array_batch_buffers = new const void* [3];
+    memset(arrow_array_batch_buffers, 0, sizeof(const void*) * 3);
     auto arrow_array_batch = new ArrowArray({
         .length = static_cast<int64_t>(numRowsFetched),
         .n_buffers = 1,
         .n_children = numCols,
-        .buffers = new const void* [3],
+        .buffers = arrow_array_batch_buffers,
         .children = new ArrowArray* [numCols],
         .release = ArrowArray_release,
     });
@@ -4163,13 +4197,15 @@ SQLRETURN FetchArrowBatch_wrap(SqlHandlePtr StatementHandle, py::list& capsules)
     arrow_array_batch->buffers[1] = new int[1];
 
     for (SQLUSMALLINT col = 0; col < numCols; col++) {
+        auto arrow_array_col_buffers = new const void* [3];
+        memset(arrow_array_col_buffers, 0, sizeof(const void*) * 3);
         auto arrow_array_col = new ArrowArray({
             .length = static_cast<int64_t>(numRowsFetched),
             .null_count = 0,
             .offset = 0,
             .n_buffers = 2,
             .n_children = 0,
-            .buffers = new const void* [3],
+            .buffers = arrow_array_col_buffers,
             .children = nullptr,
             .release = ArrowArray_release,
         });
@@ -4190,7 +4226,11 @@ SQLRETURN FetchArrowBatch_wrap(SqlHandlePtr StatementHandle, py::list& capsules)
     }
 
     capsules.append(py::capsule((void*)arrow_array_batch, "arrow_array", [](void* ptr) {
-        delete static_cast<ArrowArray*>(ptr);
+        auto arrow_array = static_cast<ArrowArray*>(ptr);
+        if (arrow_array->release) {
+            arrow_array->release(arrow_array);
+        }
+        delete arrow_array;
     }));    
 
 
