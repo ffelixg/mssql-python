@@ -165,7 +165,7 @@ struct ColumnBuffersArrow {
     std::vector<std::unique_ptr<int64_t[]>> int64;
     std::vector<std::unique_ptr<double[]>> float64;
     std::vector<std::unique_ptr<uint8_t[]>> bit;
-    std::vector<std::unique_ptr<uint32_t[]>> varlen;
+    std::vector<std::unique_ptr<uint32_t[]>> var;
     std::vector<std::unique_ptr<int32_t[]>> date;
     std::vector<std::unique_ptr<int64_t[]>> ts_micro;
     std::vector<std::unique_ptr<int64_t[]>> time_nano;
@@ -173,6 +173,7 @@ struct ColumnBuffersArrow {
 
     std::vector<std::unique_ptr<uint8_t[]>> valid;
     std::vector<std::unique_ptr<uint8_t[]>> var_data;
+    std::vector<uint32_t> var_data_len;
 
     ColumnBuffersArrow(SQLSMALLINT numCols)
         :
@@ -182,14 +183,16 @@ struct ColumnBuffersArrow {
         int64(numCols),
         float64(numCols),
         bit(numCols),
-        varlen(numCols),
+        var(numCols),
         date(numCols),
         ts_micro(numCols),
         time_nano(numCols),
         decimal(numCols),
 
         valid(numCols),
-        var_data(numCols){}
+        var_data(numCols),
+        // initialize lengths to 0
+        var_data_len(numCols, 0){}
 };
 
 #ifndef ARROW_C_DATA_INTERFACE
@@ -4081,21 +4084,80 @@ SQLRETURN FetchArrowBatch_wrap(SqlHandlePtr StatementHandle, py::list& capsules)
 
         char* format = nullptr;
         switch(dataType) {
+            case SQL_CHAR:
+            case SQL_VARCHAR:
+            case SQL_LONGVARCHAR:
+            case SQL_SS_XML:
+            case SQL_WCHAR:
+            case SQL_WVARCHAR:
+            case SQL_WLONGVARCHAR:
+            case SQL_GUID:
+                format = strdup("u");
+                buffersArrow.var[i] = std::make_unique<uint32_t[]>(fetchSize);
+                buffersArrow.var_data[i] = std::make_unique<uint8_t[]>(fetchSize * 42);
+                buffersArrow.var_data_len[i] = 42;
+                break;
+            case SQL_BINARY:
+            case SQL_VARBINARY:
+            case SQL_LONGVARBINARY:
+                format = strdup("z");
+                buffersArrow.var[i] = std::make_unique<uint32_t[]>(fetchSize);
+                buffersArrow.var_data[i] = std::make_unique<uint8_t[]>(fetchSize * 42);
+                buffersArrow.var_data_len[i] = 42;
+            case SQL_TINYINT:
+                format = strdup("C");
+                buffersArrow.uint8[i] = std::make_unique<uint8_t[]>(fetchSize);
+                break;
+            case SQL_SMALLINT:
+                format = strdup("s");
+                buffersArrow.int16[i] = std::make_unique<int16_t[]>(fetchSize);
+                break;
             case SQL_INTEGER:
                 format = strdup("i");
                 buffersArrow.int32[i] = std::make_unique<int32_t[]>(fetchSize);
-                break;
-            case SQL_DOUBLE:
-                format = strdup("g");
-                buffersArrow.float64[i] = std::make_unique<double[]>(fetchSize);
                 break;
             case SQL_BIGINT:
                 format = strdup("l");
                 buffersArrow.int64[i] = std::make_unique<int64_t[]>(fetchSize);
                 break;
-            case SQL_DATE:
+            case SQL_REAL:
+            case SQL_FLOAT:
+            case SQL_DOUBLE:
+                format = strdup("g");
+                buffersArrow.float64[i] = std::make_unique<double[]>(fetchSize);
+                break;
+            case SQL_DECIMAL:
+            case SQL_NUMERIC: {
+                std::ostringstream formatStream;
+                formatStream << "d:" << columnSize << "," << colMeta["DecimalDigits"].cast<SQLSMALLINT>();
+                std::string formatStr = formatStream.str();
+                format = strdup(formatStr.c_str());
+                buffersArrow.decimal[i] = std::make_unique<__int128_t[]>(fetchSize);
+                break;
+            }
+            case SQL_TIMESTAMP:
+            case SQL_TYPE_TIMESTAMP:
+            case SQL_DATETIME:
+                format = strdup("tsu");
+                buffersArrow.ts_micro[i] = std::make_unique<int64_t[]>(fetchSize);
+                break;
+            case SQL_SS_TIMESTAMPOFFSET:
+                format = strdup("tsu:+00:00");
+                buffersArrow.ts_micro[i] = std::make_unique<int64_t[]>(fetchSize);
+                break;
+            case SQL_TYPE_DATE:
                 format = strdup("tdD");
                 buffersArrow.date[i] = std::make_unique<int32_t[]>(fetchSize);
+                break;
+            case SQL_TIME:
+            case SQL_TYPE_TIME:
+            case SQL_SS_TIME2:
+                format = strdup("ttu");
+                buffersArrow.time_nano[i] = std::make_unique<int64_t[]>(fetchSize);
+                break;
+            case SQL_BIT:
+                format = strdup("b");
+                buffersArrow.bit[i] = std::make_unique<uint8_t[]>((fetchSize + 7) / 8);
                 break;
             default:
                 std::wstring columnName = colMeta["ColumnName"].cast<std::wstring>();
@@ -4201,6 +4263,24 @@ SQLRETURN FetchArrowBatch_wrap(SqlHandlePtr StatementHandle, py::list& capsules)
                     buffersArrow.int64[col - 1][i] = buffers.bigIntBuffers[col - 1][i];
                     break;
                 }
+                // case SQL_DATE: {
+                //     // Convert SQL_DATE_STRUCT to Arrow Date32 (days since epoch)
+                //     SQL_DATE_STRUCT sqlDate = buffers.dateBuffers[col - 1][i];
+                //     std::tm tm_date = {};
+                //     tm_date.tm_year = sqlDate.year - 1900; // tm_year is years since 1900
+                //     tm_date.tm_mon = sqlDate.month - 1;    // tm_mon is 0-11
+                //     tm_date.tm_mday = sqlDate.day;
+
+                //     std::time_t time_since_epoch = std::mktime(&tm_date);
+                //     if (time_since_epoch == -1) {
+                //         LOG("Failed to convert SQL_DATE_STRUCT to time_t for Column ID - {}", col);
+                //         ThrowStdException("Date conversion error, check logs for details");
+                //     }
+                //     // Calculate days since epoch
+                //     int32_t days_since_epoch = static_cast<int32_t>(time_since_epoch / 86400);
+                //     buffersArrow.date32[col - 1][i] = days_since_epoch;
+                //     break;
+                // }
                 default: {
                     std::wstring columnName = columnMeta["ColumnName"].cast<std::wstring>();
                     std::ostringstream errorString;
