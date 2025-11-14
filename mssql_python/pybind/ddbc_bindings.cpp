@@ -151,13 +151,13 @@ struct NumericData {
 struct ColumnBuffersArrow {
     // std::vector<std::vector<SQLCHAR>> charBuffers;
     // std::vector<std::vector<SQLWCHAR>> wcharBuffers;
-    std::vector<std::vector<SQLINTEGER>> intBuffers;
+    std::vector<std::vector<int32_t>> intBuffers;
     // std::vector<std::vector<SQLSMALLINT>> smallIntBuffers;
     // std::vector<std::vector<SQLREAL>> realBuffers;
-    // std::vector<std::vector<SQLDOUBLE>> doubleBuffers;
+    std::vector<std::vector<SQLDOUBLE>> doubleBuffers;
     // std::vector<std::vector<SQL_TIMESTAMP_STRUCT>> timestampBuffers;
-    // std::vector<std::vector<SQLBIGINT>> bigIntBuffers;
-    // std::vector<std::vector<SQL_DATE_STRUCT>> dateBuffers;
+    std::vector<std::vector<int64_t>> bigIntBuffers;
+    // std::vector<std::vector<int32_t>> dateBuffers;
     // std::vector<std::vector<SQL_TIME_STRUCT>> timeBuffers;
     // std::vector<std::vector<SQLGUID>> guidBuffers;
     std::vector<std::vector<uint8_t>> valid;
@@ -170,9 +170,9 @@ struct ColumnBuffersArrow {
           intBuffers(numCols),
         //   smallIntBuffers(numCols),
         //   realBuffers(numCols),
-        //   doubleBuffers(numCols),
+          doubleBuffers(numCols),
         //   timestampBuffers(numCols),
-        //   bigIntBuffers(numCols),
+          bigIntBuffers(numCols),
         //   dateBuffers(numCols),
         //   timeBuffers(numCols),
         //   guidBuffers(numCols),
@@ -4016,7 +4016,7 @@ void ArrowArray_release(struct ArrowArray* array) {
     uint32_t current_buffer = 0;
     while (buffers_freed < array->n_buffers) {
         if (array->buffers[current_buffer]) {
-            delete[] array->buffers[current_buffer];
+            free((void*)array->buffers[current_buffer]);
             buffers_freed++;
         }
         current_buffer++;
@@ -4065,20 +4065,21 @@ SQLRETURN FetchArrowBatch_wrap(SqlHandlePtr StatementHandle, py::list& capsules)
             lobColumns.push_back(i + 1); // 1-based
         }
 
-        assert(dataType == SQL_INTEGER && "Only INTEGER type is supported in Arrow batch fetch for now");
-
         std::string columnName = colMeta["ColumnName"].cast<std::string>();
 
-        auto arrow_schema = new ArrowSchema({
-            .format = strdup("i"),
-            .name = strdup(columnName.c_str()),
-            .release = ArrowSchema_release,
-        });
-        batch_children[i] = arrow_schema;
-
+        char* format = nullptr;
         switch(dataType) {
             case SQL_INTEGER:
+                format = strdup("i");
                 buffersArrow.intBuffers[i].resize(fetchSize);
+                break;
+            case SQL_DOUBLE:
+                format = strdup("g");
+                buffersArrow.doubleBuffers[i].resize(fetchSize);
+                break;
+            case SQL_BIGINT:
+                format = strdup("l");
+                buffersArrow.bigIntBuffers[i].resize(fetchSize);
                 break;
             default:
                 std::wstring columnName = colMeta["ColumnName"].cast<std::wstring>();
@@ -4089,6 +4090,14 @@ SQLRETURN FetchArrowBatch_wrap(SqlHandlePtr StatementHandle, py::list& capsules)
                 ThrowStdException(errorString.str());
                 break;
         }
+        
+        auto arrow_schema = new ArrowSchema({
+            .format = format,
+            .name = strdup(columnName.c_str()),
+            .release = ArrowSchema_release,
+        });
+        batch_children[i] = arrow_schema;
+
         buffersArrow.valid[i].resize(fetchSize / 64 + 1);
         // Initialize validity bitmap to all valid
         std::memset(buffersArrow.valid[i].data(), 0xFF, buffersArrow.valid[i].size());
@@ -4168,6 +4177,14 @@ SQLRETURN FetchArrowBatch_wrap(SqlHandlePtr StatementHandle, py::list& capsules)
                     buffersArrow.intBuffers[col - 1][i] = buffers.intBuffers[col - 1][i];
                     break;
                 }
+                case SQL_DOUBLE: {
+                    buffersArrow.doubleBuffers[col - 1][i] = buffers.doubleBuffers[col - 1][i];
+                    break;
+                }
+                case SQL_BIGINT: {
+                    buffersArrow.bigIntBuffers[col - 1][i] = buffers.bigIntBuffers[col - 1][i];
+                    break;
+                }
                 default: {
                     std::wstring columnName = columnMeta["ColumnName"].cast<std::wstring>();
                     std::ostringstream errorString;
@@ -4197,6 +4214,8 @@ SQLRETURN FetchArrowBatch_wrap(SqlHandlePtr StatementHandle, py::list& capsules)
     arrow_array_batch->buffers[1] = new int[1];
 
     for (SQLUSMALLINT col = 0; col < numCols; col++) {
+        auto columnMeta = columnNames[col].cast<py::dict>();
+        SQLSMALLINT dataType = columnMeta["DataType"].cast<SQLSMALLINT>();
         auto arrow_array_col_buffers = new const void* [3];
         memset(arrow_array_col_buffers, 0, sizeof(const void*) * 3);
         auto arrow_array_col = new ArrowArray({
@@ -4210,10 +4229,38 @@ SQLRETURN FetchArrowBatch_wrap(SqlHandlePtr StatementHandle, py::list& capsules)
             .release = ArrowArray_release,
         });
         // Allocate new memory and copy the data
-        int* data_copy = new int[numRowsFetched];
-        std::memcpy(data_copy, buffersArrow.intBuffers[col].data(), 
-                    numRowsFetched * sizeof(int));
-        arrow_array_col->buffers[1] = data_copy;
+        switch (dataType) {
+            case SQL_INTEGER: {
+                int* data_copy = new int[numRowsFetched];
+                std::memcpy(data_copy, buffersArrow.intBuffers[col].data(), 
+                            numRowsFetched * sizeof(int));
+                arrow_array_col->buffers[1] = data_copy;
+                break;
+            }
+            case SQL_DOUBLE: {
+                double* data_copy = new double[numRowsFetched];
+                std::memcpy(data_copy, buffersArrow.doubleBuffers[col].data(), 
+                numRowsFetched * sizeof(double));
+                arrow_array_col->buffers[1] = data_copy;
+                break;
+            }
+            case SQL_BIGINT: {
+                int64_t* data_copy = new int64_t[numRowsFetched];
+                std::memcpy(data_copy, buffersArrow.bigIntBuffers[col].data(), 
+                numRowsFetched * sizeof(int64_t));
+                arrow_array_col->buffers[1] = data_copy;
+                break;
+            }
+            default: {
+                std::wstring columnName = columnMeta["ColumnName"].cast<std::wstring>();
+                std::ostringstream errorString;
+                errorString << "Unsupported data type for column - " << columnName.c_str()
+                            << ", Type - " << dataType << ", column ID - " << (col + 1);
+                LOG(errorString.str());
+                ThrowStdException(errorString.str());
+                break;
+            }
+        }
 
         // Allocate & copy validity bitmap
         size_t validityBitmapSize = buffersArrow.valid[col].size();
@@ -4221,7 +4268,6 @@ SQLRETURN FetchArrowBatch_wrap(SqlHandlePtr StatementHandle, py::list& capsules)
         std::memcpy(validity_copy, buffersArrow.valid[col].data(), validityBitmapSize);
         arrow_array_col->buffers[0] = validity_copy;
 
-        // TODO Make sure to free in release callback!
         arrow_array_batch->children[col] = arrow_array_col;
     }
 
