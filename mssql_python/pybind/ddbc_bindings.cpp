@@ -4253,24 +4253,24 @@ SQLRETURN FetchArrowBatch_wrap(SqlHandlePtr StatementHandle, py::list& capsules)
                     buffersArrow.int64[col - 1][i] = buffers.bigIntBuffers[col - 1][i];
                     break;
                 }
-                // case SQL_DATE: {
-                //     // Convert SQL_DATE_STRUCT to Arrow Date32 (days since epoch)
-                //     SQL_DATE_STRUCT sqlDate = buffers.dateBuffers[col - 1][i];
-                //     std::tm tm_date = {};
-                //     tm_date.tm_year = sqlDate.year - 1900; // tm_year is years since 1900
-                //     tm_date.tm_mon = sqlDate.month - 1;    // tm_mon is 0-11
-                //     tm_date.tm_mday = sqlDate.day;
+                case SQL_TYPE_DATE: {
+                    // Convert SQL_DATE_STRUCT to Arrow Date32 (days since epoch)
+                    SQL_DATE_STRUCT sqlDate = buffers.dateBuffers[col - 1][i];
+                    std::tm tm_date = {};
+                    tm_date.tm_year = sqlDate.year - 1900; // tm_year is years since 1900
+                    tm_date.tm_mon = sqlDate.month - 1;    // tm_mon is 0-11
+                    tm_date.tm_mday = sqlDate.day;
 
-                //     std::time_t time_since_epoch = std::mktime(&tm_date);
-                //     if (time_since_epoch == -1) {
-                //         LOG("Failed to convert SQL_DATE_STRUCT to time_t for Column ID - {}", col);
-                //         ThrowStdException("Date conversion error, check logs for details");
-                //     }
-                //     // Calculate days since epoch
-                //     int32_t days_since_epoch = static_cast<int32_t>(time_since_epoch / 86400);
-                //     buffersArrow.date32[col - 1][i] = days_since_epoch;
-                //     break;
-                // }
+                    std::time_t time_since_epoch = std::mktime(&tm_date);
+                    if (time_since_epoch == -1) {
+                        LOG("Failed to convert SQL_DATE_STRUCT to time_t for Column ID - {}", col);
+                        ThrowStdException("Date conversion error, check logs for details");
+                    }
+                    // Calculate days since epoch
+                    int32_t days_since_epoch = static_cast<int32_t>(time_since_epoch / 86400);
+                    buffersArrow.date[col - 1][i] = days_since_epoch;
+                    break;
+                }
                 default: {
                     std::wstring columnName = columnMeta["ColumnName"].cast<std::wstring>();
                     std::ostringstream errorString;
