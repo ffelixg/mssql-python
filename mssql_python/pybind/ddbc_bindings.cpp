@@ -4326,18 +4326,61 @@ SQLRETURN FetchArrowBatch_wrap(SqlHandlePtr StatementHandle, py::list& capsules)
         });
         // Allocate new memory and copy the data
         switch (dataType) {
-            case SQL_INTEGER: {
+            case SQL_CHAR:
+            case SQL_VARCHAR:
+            case SQL_LONGVARCHAR:
+            case SQL_SS_XML:
+            case SQL_WCHAR:
+            case SQL_WVARCHAR:
+            case SQL_WLONGVARCHAR:
+            case SQL_GUID:
+            case SQL_BINARY:
+            case SQL_VARBINARY:
+            case SQL_LONGVARBINARY:
+                arrow_array_col->buffers[1] = buffersArrow.var[col].release();
+                arrow_array_col->buffers[2] = buffersArrow.var_data[col].release();
+                break;
+            case SQL_TINYINT:
+                arrow_array_col->buffers[1] = buffersArrow.uint8[col].release();
+                break;
+            case SQL_SMALLINT:
+                arrow_array_col->buffers[1] = buffersArrow.int16[col].release();
+                break;
+            case SQL_INTEGER:
                 arrow_array_col->buffers[1] = buffersArrow.int32[col].release();
                 break;
-            }
-            case SQL_DOUBLE: {
-                arrow_array_col->buffers[1] = buffersArrow.float64[col].release();
-                break;
-            }
-            case SQL_BIGINT: {
+            case SQL_BIGINT:
                 arrow_array_col->buffers[1] = buffersArrow.int64[col].release();
                 break;
+            case SQL_REAL:
+            case SQL_FLOAT:
+            case SQL_DOUBLE:
+                arrow_array_col->buffers[1] = buffersArrow.float64[col].release();
+                break;
+            case SQL_DECIMAL:
+            case SQL_NUMERIC: {
+                arrow_array_col->buffers[1] = buffersArrow.decimal[col].release();
+                break;
             }
+            case SQL_TIMESTAMP:
+            case SQL_TYPE_TIMESTAMP:
+            case SQL_DATETIME:
+                arrow_array_col->buffers[1] = buffersArrow.ts_micro[col].release();
+                break;
+            case SQL_SS_TIMESTAMPOFFSET:
+                arrow_array_col->buffers[1] = buffersArrow.ts_micro[col].release();
+                break;
+            case SQL_TYPE_DATE:
+                arrow_array_col->buffers[1] = buffersArrow.date[col].release();
+                break;
+            case SQL_TIME:
+            case SQL_TYPE_TIME:
+            case SQL_SS_TIME2:
+                arrow_array_col->buffers[1] = buffersArrow.time_nano[col].release();
+                break;
+            case SQL_BIT:
+                arrow_array_col->buffers[1] = buffersArrow.bit[col].release();
+                break;
             default: {
                 std::wstring columnName = columnMeta["ColumnName"].cast<std::wstring>();
                 std::ostringstream errorString;
