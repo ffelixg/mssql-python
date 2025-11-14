@@ -159,35 +159,37 @@ struct NumericData {
 
 // Struct to hold data buffers and indicators for each column
 struct ColumnBuffersArrow {
-    // std::vector<std::unique_ptr<SQLCHAR[]>> charBuffers;
-    // std::vector<std::unique_ptr<SQLWCHAR[]>> wcharBuffers;
-    std::vector<std::unique_ptr<int32_t[]>> intBuffers;
-    // std::vector<std::unique_ptr<SQLSMALLINT[]>> smallIntBuffers;
-    // std::vector<std::unique_ptr<SQLREAL[]>> realBuffers;
-    std::vector<std::unique_ptr<SQLDOUBLE[]>> doubleBuffers;
-    // std::vector<std::unique_ptr<SQL_TIMESTAMP_STRUCT[]>> timestampBuffers;
-    std::vector<std::unique_ptr<int64_t[]>> bigIntBuffers;
-    // std::vector<std::unique_ptr<int32_t[]>> dateBuffers;
-    // std::vector<std::unique_ptr<SQL_TIME_STRUCT[]>> timeBuffers;
-    // std::vector<std::unique_ptr<SQLGUID[]>> guidBuffers;
-    std::vector<std::unique_ptr<uint8_t[]>> valid;
-    // std::vector<std::unique_ptr<DateTimeOffset[]>> datetimeoffsetBuffers;
+    std::vector<std::unique_ptr<uint8_t[]>> uint8;
+    std::vector<std::unique_ptr<int16_t[]>> int16;
+    std::vector<std::unique_ptr<int32_t[]>> int32;
+    std::vector<std::unique_ptr<int64_t[]>> int64;
+    std::vector<std::unique_ptr<double[]>> float64;
+    std::vector<std::unique_ptr<uint8_t[]>> bit;
+    std::vector<std::unique_ptr<uint32_t[]>> varlen;
+    std::vector<std::unique_ptr<int32_t[]>> date;
+    std::vector<std::unique_ptr<int64_t[]>> ts_micro;
+    std::vector<std::unique_ptr<int64_t[]>> time_nano;
+    std::vector<std::unique_ptr<__int128_t[]>> decimal;
 
-    ColumnBuffersArrow(SQLSMALLINT numCols, int fetchSize)
+    std::vector<std::unique_ptr<uint8_t[]>> valid;
+    std::vector<std::unique_ptr<uint8_t[]>> var_data;
+
+    ColumnBuffersArrow(SQLSMALLINT numCols)
         :
-        // : charBuffers(numCols),
-        //   wcharBuffers(numCols),
-          intBuffers(numCols),
-        //   smallIntBuffers(numCols),
-        //   realBuffers(numCols),
-          doubleBuffers(numCols),
-        //   timestampBuffers(numCols),
-          bigIntBuffers(numCols),
-        //   dateBuffers(numCols),
-        //   timeBuffers(numCols),
-        //   guidBuffers(numCols),
-        //   datetimeoffsetBuffers(numCols),
-          valid(numCols) {}
+        uint8(numCols),
+        int16(numCols),
+        int32(numCols),
+        int64(numCols),
+        float64(numCols),
+        bit(numCols),
+        varlen(numCols),
+        date(numCols),
+        ts_micro(numCols),
+        time_nano(numCols),
+        decimal(numCols),
+
+        valid(numCols),
+        var_data(numCols){}
 };
 
 #ifndef ARROW_C_DATA_INTERFACE
@@ -4062,7 +4064,7 @@ SQLRETURN FetchArrowBatch_wrap(SqlHandlePtr StatementHandle, py::list& capsules)
     auto batch_children = new ArrowSchema* [numCols];
     std::vector<SQLUSMALLINT> lobColumns;
 
-    ColumnBuffersArrow buffersArrow(numCols, fetchSize);
+    ColumnBuffersArrow buffersArrow(numCols);
     for (SQLSMALLINT i = 0; i < numCols; i++) {
         auto colMeta = columnNames[i].cast<py::dict>();
         SQLSMALLINT dataType = colMeta["DataType"].cast<SQLSMALLINT>();
@@ -4081,15 +4083,19 @@ SQLRETURN FetchArrowBatch_wrap(SqlHandlePtr StatementHandle, py::list& capsules)
         switch(dataType) {
             case SQL_INTEGER:
                 format = strdup("i");
-                buffersArrow.intBuffers[i] = std::make_unique<int32_t[]>(fetchSize);
+                buffersArrow.int32[i] = std::make_unique<int32_t[]>(fetchSize);
                 break;
             case SQL_DOUBLE:
                 format = strdup("g");
-                buffersArrow.doubleBuffers[i] = std::make_unique<double[]>(fetchSize);
+                buffersArrow.float64[i] = std::make_unique<double[]>(fetchSize);
                 break;
             case SQL_BIGINT:
                 format = strdup("l");
-                buffersArrow.bigIntBuffers[i] = std::make_unique<int64_t[]>(fetchSize);
+                buffersArrow.int64[i] = std::make_unique<int64_t[]>(fetchSize);
+                break;
+            case SQL_DATE:
+                format = strdup("tdD");
+                buffersArrow.date[i] = std::make_unique<int32_t[]>(fetchSize);
                 break;
             default:
                 std::wstring columnName = colMeta["ColumnName"].cast<std::wstring>();
@@ -4184,15 +4190,15 @@ SQLRETURN FetchArrowBatch_wrap(SqlHandlePtr StatementHandle, py::list& capsules)
 
             switch (dataType) {
                 case SQL_INTEGER: {
-                    buffersArrow.intBuffers[col - 1][i] = buffers.intBuffers[col - 1][i];
+                    buffersArrow.int32[col - 1][i] = buffers.intBuffers[col - 1][i];
                     break;
                 }
                 case SQL_DOUBLE: {
-                    buffersArrow.doubleBuffers[col - 1][i] = buffers.doubleBuffers[col - 1][i];
+                    buffersArrow.float64[col - 1][i] = buffers.doubleBuffers[col - 1][i];
                     break;
                 }
                 case SQL_BIGINT: {
-                    buffersArrow.bigIntBuffers[col - 1][i] = buffers.bigIntBuffers[col - 1][i];
+                    buffersArrow.int64[col - 1][i] = buffers.bigIntBuffers[col - 1][i];
                     break;
                 }
                 default: {
@@ -4241,15 +4247,15 @@ SQLRETURN FetchArrowBatch_wrap(SqlHandlePtr StatementHandle, py::list& capsules)
         // Allocate new memory and copy the data
         switch (dataType) {
             case SQL_INTEGER: {
-                arrow_array_col->buffers[1] = buffersArrow.intBuffers[col].release();
+                arrow_array_col->buffers[1] = buffersArrow.int32[col].release();
                 break;
             }
             case SQL_DOUBLE: {
-                arrow_array_col->buffers[1] = buffersArrow.doubleBuffers[col].release();
+                arrow_array_col->buffers[1] = buffersArrow.float64[col].release();
                 break;
             }
             case SQL_BIGINT: {
-                arrow_array_col->buffers[1] = buffersArrow.bigIntBuffers[col].release();
+                arrow_array_col->buffers[1] = buffersArrow.int64[col].release();
                 break;
             }
             default: {
