@@ -4049,6 +4049,22 @@ void ArrowArray_release(struct ArrowArray* array) {
 
 }
 
+int32_t dateAsDayCount(SQLUSMALLINT year, SQLUSMALLINT month, SQLUSMALLINT day) {
+    // Convert SQL_DATE_STRUCT to Arrow Date32 (days since epoch)
+    std::tm tm_date = {};
+    tm_date.tm_year = year - 1900; // tm_year is years since 1900
+    tm_date.tm_mon = month - 1;    // tm_mon is 0-11
+    tm_date.tm_mday = day;
+
+    std::time_t time_since_epoch = std::mktime(&tm_date);
+    if (time_since_epoch == -1) {
+        LOG("Failed to convert SQL_DATE_STRUCT to time_t");
+        ThrowStdException("Date conversion error");
+    }
+    // Calculate days since epoch
+    return time_since_epoch / 86400;
+}
+
 SQLRETURN FetchArrowBatch_wrap(SqlHandlePtr StatementHandle, py::list& capsules) {
     ssize_t fetchSize = 500;
     SQLRETURN ret;
@@ -4138,7 +4154,7 @@ SQLRETURN FetchArrowBatch_wrap(SqlHandlePtr StatementHandle, py::list& capsules)
             case SQL_TIMESTAMP:
             case SQL_TYPE_TIMESTAMP:
             case SQL_DATETIME:
-                format = strdup("tsu");
+                format = strdup("tsu:");
                 buffersArrow.ts_micro[i] = std::make_unique<int64_t[]>(fetchSize);
                 break;
             case SQL_SS_TIMESTAMPOFFSET:
@@ -4263,22 +4279,44 @@ SQLRETURN FetchArrowBatch_wrap(SqlHandlePtr StatementHandle, py::list& capsules)
                     buffersArrow.int64[col - 1][i] = buffers.bigIntBuffers[col - 1][i];
                     break;
                 }
-                case SQL_TYPE_DATE: {
-                    // Convert SQL_DATE_STRUCT to Arrow Date32 (days since epoch)
-                    SQL_DATE_STRUCT sqlDate = buffers.dateBuffers[col - 1][i];
-                    std::tm tm_date = {};
-                    tm_date.tm_year = sqlDate.year - 1900; // tm_year is years since 1900
-                    tm_date.tm_mon = sqlDate.month - 1;    // tm_mon is 0-11
-                    tm_date.tm_mday = sqlDate.day;
+                case SQL_TYPE_DATE:
+                    buffersArrow.date[col - 1][i] = dateAsDayCount(
+                        buffers.dateBuffers[col - 1][i].year,
+                        buffers.dateBuffers[col - 1][i].month,
+                        buffers.dateBuffers[col - 1][i].day
+                    );
+                    break;
 
-                    std::time_t time_since_epoch = std::mktime(&tm_date);
-                    if (time_since_epoch == -1) {
-                        LOG("Failed to convert SQL_DATE_STRUCT to time_t for Column ID - {}", col);
-                        ThrowStdException("Date conversion error, check logs for details");
-                    }
-                    // Calculate days since epoch
-                    int32_t days_since_epoch = static_cast<int32_t>(time_since_epoch / 86400);
-                    buffersArrow.date[col - 1][i] = days_since_epoch;
+                case SQL_SS_TIMESTAMPOFFSET: {
+                    DateTimeOffset sql_value = buffers.datetimeoffsetBuffers[col - 1][i];
+                    int64_t days = dateAsDayCount(
+                        sql_value.year,
+                        sql_value.month,
+                        sql_value.day
+                    );
+                    buffersArrow.ts_micro[col - 1][i] = 
+                        days * 86400 * 1000000 + 
+                        (static_cast<int64_t>(sql_value.hour) - static_cast<int64_t>(sql_value.timezone_hour)) * 3600 * 1000000 +
+                        (static_cast<int64_t>(sql_value.minute) - static_cast<int64_t>(sql_value.timezone_minute)) * 60 * 1000000 +
+                        static_cast<int64_t>(sql_value.second) * 1000000 +
+                        static_cast<int64_t>(sql_value.fraction) / 1000;
+                    break;
+                }
+                case SQL_TIMESTAMP:
+                case SQL_TYPE_TIMESTAMP:
+                case SQL_DATETIME: {
+                    SQL_TIMESTAMP_STRUCT sql_value = buffers.timestampBuffers[col - 1][i];
+                    int64_t days = dateAsDayCount(
+                        sql_value.year,
+                        sql_value.month,
+                        sql_value.day
+                    );
+                    buffersArrow.ts_micro[col - 1][i] = 
+                        days * 86400 * 1000000 + 
+                        static_cast<int64_t>(sql_value.hour) * 3600 * 1000000 +
+                        static_cast<int64_t>(sql_value.minute) * 60 * 1000000 +
+                        static_cast<int64_t>(sql_value.second) * 1000000 +
+                        static_cast<int64_t>(sql_value.fraction) / 1000;
                     break;
                 }
                 default: {
