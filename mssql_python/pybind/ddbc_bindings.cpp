@@ -4237,6 +4237,7 @@ SQLRETURN FetchArrowBatch_wrap(SqlHandlePtr StatementHandle, py::list& capsules)
         for (SQLUSMALLINT col = 1; col <= numCols; col++) {
             auto columnMeta = columnNames[col - 1].cast<py::dict>();
             SQLSMALLINT dataType = columnMeta["DataType"].cast<SQLSMALLINT>();
+            SQLULEN columnSize = columnMeta["ColumnSize"].cast<SQLULEN>();
             SQLLEN dataLen = buffers.indicators[col - 1][i];
 
             // TODO: variable length data needs special handling, this logic wont suffice
@@ -4259,16 +4260,29 @@ SQLRETURN FetchArrowBatch_wrap(SqlHandlePtr StatementHandle, py::list& capsules)
             switch (dataType) {
                 case SQL_BINARY:
                 case SQL_VARBINARY:
-                case SQL_LONGVARBINARY:
-                case SQL_CHAR:
-                case SQL_VARCHAR:
-                case SQL_LONGVARCHAR: {
+                case SQL_LONGVARBINARY: {
+                    uint64_t fetchBufferSize = columnSize /* bytes are not null terminated */;
                     auto target_vec = &buffersArrow.var_data[col - 1];
                     auto start = buffersArrow.var[col - 1][i];
                     while (target_vec->size() < start + dataLen) {
                         target_vec->resize(target_vec->size() * 2);
                     }
-                    std::memcpy(&(*target_vec)[start], &buffers.charBuffers[col - 1][i], dataLen);
+
+                    std::memcpy(&(*target_vec)[start], &buffers.charBuffers[col - 1][i * fetchBufferSize], dataLen);
+                    buffersArrow.var[col - 1][i + 1] = start + dataLen;
+                    break;
+                }
+                case SQL_CHAR:
+                case SQL_VARCHAR:
+                case SQL_LONGVARCHAR: {
+                    uint64_t fetchBufferSize = columnSize + 1 /* null-termination */;
+                    auto target_vec = &buffersArrow.var_data[col - 1];
+                    auto start = buffersArrow.var[col - 1][i];
+                    while (target_vec->size() < start + dataLen) {
+                        target_vec->resize(target_vec->size() * 2);
+                    }
+
+                    std::memcpy(&(*target_vec)[start], &buffers.charBuffers[col - 1][i * fetchBufferSize], dataLen);
                     buffersArrow.var[col - 1][i + 1] = start + dataLen;
                     break;
                 }
@@ -4276,24 +4290,25 @@ SQLRETURN FetchArrowBatch_wrap(SqlHandlePtr StatementHandle, py::list& capsules)
                 case SQL_WCHAR:
                 case SQL_WVARCHAR:
                 case SQL_WLONGVARCHAR: {
-                    auto wcharSource = &buffers.wcharBuffers[col - 1][i];
+                    // uint64_t fetchBufferSize = (columnSize + 1) * sizeof(SQLWCHAR);  // +1 for null terminator
+                    assert(dataLen % sizeof(SQLWCHAR) == 0);
+                    auto dataLenW = dataLen / sizeof(SQLWCHAR);
+                    auto wcharSource = &buffers.wcharBuffers[col - 1][i * (columnSize + 1)];
                     auto start = buffersArrow.var[col - 1][i];
                     auto target_vec = &buffersArrow.var_data[col - 1];
 #if defined(_WIN32)
                     // Convert wide string
-                    int dataLenConverted = WideCharToMultiByte(CP_UTF8, 0, wcharSource, dataLen, NULL, 0, NULL, NULL);
+                    int dataLenConverted = WideCharToMultiByte(CP_UTF8, 0, wcharSource, dataLenW, NULL, 0, NULL, NULL);
                     while (target_vec->size() < start + dataLenConverted) {
                         target_vec->resize(target_vec->size() * 2);
                     }
-                    WideCharToMultiByte(CP_UTF8, 0, wcharSource, dataLen, &(*target_vec)[start], dataLenConverted, NULL, NULL);
+                    WideCharToMultiByte(CP_UTF8, 0, wcharSource, dataLenW, &(*target_vec)[start], dataLenConverted, NULL, NULL);
                     buffersArrow.var[col - 1][i + 1] = start + dataLenConverted;
 #else
                     // On Unix, use the SQLWCHARToWString utility and then convert to UTF-8
-                    std::string utf8str = WideToUTF8(SQLWCHARToWString(wcharSource, dataLen));
+                    std::string utf8str = WideToUTF8(SQLWCHARToWString(wcharSource, dataLenW));
                     std::memcpy(&(*target_vec)[start], utf8str.data(), utf8str.size());
                     buffersArrow.var[col - 1][i + 1] = start + utf8str.size();
-                    // debug print results
-                    std::cout << "UTF-8 string: " << utf8str << " " << utf8str.size() << std::endl;
 #endif
                     break;
                 }
