@@ -4267,11 +4267,21 @@ SQLRETURN FetchArrowBatch_wrap(SqlHandlePtr StatementHandle, py::list& capsules)
             assert(dataLen >= 0 && "Data length must be >= 0");
 
             switch (dataType) {
+                case SQL_BINARY:
+                case SQL_VARBINARY:
+                case SQL_LONGVARBINARY:
                 case SQL_CHAR:
                 case SQL_VARCHAR:
-                case SQL_LONGVARCHAR:
-                    assert(0 && "TODO");
-                    break; 
+                case SQL_LONGVARCHAR: {
+                    auto target_vec = &buffersArrow.var_data[col - 1];
+                    auto start = buffersArrow.var[col - 1][i];
+                    while (target_vec->size() < start + dataLen) {
+                        target_vec->resize(target_vec->size() * 2);
+                    }
+                    std::memcpy(&(*target_vec)[start], &buffers.charBuffers[col - 1][i], dataLen);
+                    buffersArrow.var[col - 1][i + 1] = start + dataLen;
+                    break;
+                }
                 case SQL_SS_XML:
                 case SQL_WCHAR:
                 case SQL_WVARCHAR:
@@ -4298,11 +4308,6 @@ SQLRETURN FetchArrowBatch_wrap(SqlHandlePtr StatementHandle, py::list& capsules)
                     break;
                 }
                 case SQL_GUID:
-                    assert(0 && "TODO");
-                    break;
-                case SQL_BINARY:
-                case SQL_VARBINARY:
-                case SQL_LONGVARBINARY:
                     assert(0 && "TODO");
                     break;
                 case SQL_TINYINT:
