@@ -2211,7 +2211,7 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
             ) from e
         capsules = []
         ret = ddbc_bindings.DDBCSQLFetchArrowBatch(self.hstmt, capsules)
-        assert ret == 0
+        assert ret in (0, 1), ret
         schema_capsule = capsules[0]
         array_capsule = capsules[1]
         batch = pa.RecordBatch._import_from_c_capsule(schema_capsule, array_capsule)

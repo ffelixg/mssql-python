@@ -168,7 +168,7 @@ struct ColumnBuffersArrow {
     std::vector<std::unique_ptr<uint32_t[]>> var;
     std::vector<std::unique_ptr<int32_t[]>> date;
     std::vector<std::unique_ptr<int64_t[]>> ts_micro;
-    std::vector<std::unique_ptr<int64_t[]>> time_nano;
+    std::vector<std::unique_ptr<int32_t[]>> time_second;
     std::vector<std::unique_ptr<__int128_t[]>> decimal;
 
     std::vector<std::unique_ptr<uint8_t[]>> valid;
@@ -185,7 +185,7 @@ struct ColumnBuffersArrow {
         var(numCols),
         date(numCols),
         ts_micro(numCols),
-        time_nano(numCols),
+        time_second(numCols),
         decimal(numCols),
 
         valid(numCols),
@@ -4168,8 +4168,8 @@ SQLRETURN FetchArrowBatch_wrap(SqlHandlePtr StatementHandle, py::list& capsules)
             case SQL_TIME:
             case SQL_TYPE_TIME:
             case SQL_SS_TIME2:
-                format = strdup("ttu");
-                buffersArrow.time_nano[i] = std::make_unique<int64_t[]>(fetchSize);
+                format = strdup("tts");
+                buffersArrow.time_second[i] = std::make_unique<int32_t[]>(fetchSize);
                 break;
             case SQL_BIT:
                 format = strdup("b");
@@ -4337,10 +4337,10 @@ SQLRETURN FetchArrowBatch_wrap(SqlHandlePtr StatementHandle, py::list& capsules)
                     break;
                 }
                 case SQL_TINYINT:
-                    assert(0 && "TODO");
+                    buffersArrow.uint8[col - 1][i] = buffers.charBuffers[col - 1][i];
                     break;
                 case SQL_SMALLINT:
-                    assert(0 && "TODO");
+                    buffersArrow.int16[col - 1][i] = buffers.smallIntBuffers[col - 1][i];
                     break;
                 case SQL_INTEGER:
                     buffersArrow.int32[col - 1][i] = buffers.intBuffers[col - 1][i];
@@ -4399,12 +4399,33 @@ SQLRETURN FetchArrowBatch_wrap(SqlHandlePtr StatementHandle, py::list& capsules)
                     break;
                 case SQL_TIME:
                 case SQL_TYPE_TIME:
-                case SQL_SS_TIME2:
-                    assert(0 && "TODO");
+                case SQL_SS_TIME2: {
+                    // TODO wrong ctype for SQL_SS_TIME2
+                    const SQL_TIME_STRUCT& timeValue = buffers.timeBuffers[col - 1][i];
+                    buffersArrow.time_second[col - 1][i] = 
+                        static_cast<int32_t>(timeValue.hour) * 3600 +
+                        static_cast<int32_t>(timeValue.minute) * 60 +
+                        static_cast<int32_t>(timeValue.second);
                     break;
-                case SQL_BIT:
-                    assert(0 && "TODO");
+                }
+                case SQL_BIT: {
+                    // SQL_BIT is stored as a single bit in Arrow's bitmap format
+                    // Get the boolean value from the buffer
+                    bool bitValue = buffers.charBuffers[col - 1][i] != 0;
+                    
+                    // Set the bit in the Arrow bitmap
+                    size_t byteIndex = i / 8;
+                    size_t bitIndex = i % 8;
+                    
+                    if (bitValue) {
+                        // Set bit to 1
+                        buffersArrow.bit[col - 1][byteIndex] |= (1 << bitIndex);
+                    } else {
+                        // Clear bit to 0
+                        buffersArrow.bit[col - 1][byteIndex] &= ~(1 << bitIndex);
+                    }
                     break;
+                }
                 default: {
                     std::wstring columnName = columnMeta["ColumnName"].cast<std::wstring>();
                     std::ostringstream errorString;
@@ -4497,7 +4518,7 @@ SQLRETURN FetchArrowBatch_wrap(SqlHandlePtr StatementHandle, py::list& capsules)
             case SQL_TIME:
             case SQL_TYPE_TIME:
             case SQL_SS_TIME2:
-                arrow_array_col_buffers[1] = buffersArrow.time_nano[col].release();
+                arrow_array_col_buffers[1] = buffersArrow.time_second[col].release();
                 break;
             case SQL_BIT:
                 arrow_array_col_buffers[1] = buffersArrow.bit[col].release();
