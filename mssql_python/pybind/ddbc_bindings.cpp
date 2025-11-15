@@ -4267,6 +4267,11 @@ SQLRETURN FetchArrowBatch_wrap(SqlHandlePtr StatementHandle, py::list& capsules)
             assert(dataLen >= 0 && "Data length must be >= 0");
 
             switch (dataType) {
+                case SQL_CHAR:
+                case SQL_VARCHAR:
+                case SQL_LONGVARCHAR:
+                    assert(0 && "TODO");
+                    break; 
                 case SQL_SS_XML:
                 case SQL_WCHAR:
                 case SQL_WVARCHAR:
@@ -4292,39 +4297,34 @@ SQLRETURN FetchArrowBatch_wrap(SqlHandlePtr StatementHandle, py::list& capsules)
 #endif
                     break;
                 }
-                case SQL_INTEGER: {
+                case SQL_GUID:
+                    assert(0 && "TODO");
+                    break;
+                case SQL_BINARY:
+                case SQL_VARBINARY:
+                case SQL_LONGVARBINARY:
+                    assert(0 && "TODO");
+                    break;
+                case SQL_TINYINT:
+                    assert(0 && "TODO");
+                    break;
+                case SQL_SMALLINT:
+                    assert(0 && "TODO");
+                    break;
+                case SQL_INTEGER:
                     buffersArrow.int32[col - 1][i] = buffers.intBuffers[col - 1][i];
                     break;
-                }
-                case SQL_DOUBLE: {
-                    buffersArrow.float64[col - 1][i] = buffers.doubleBuffers[col - 1][i];
-                    break;
-                }
-                case SQL_BIGINT: {
+                case SQL_BIGINT:
                     buffersArrow.int64[col - 1][i] = buffers.bigIntBuffers[col - 1][i];
                     break;
-                }
-                case SQL_TYPE_DATE:
-                    buffersArrow.date[col - 1][i] = dateAsDayCount(
-                        buffers.dateBuffers[col - 1][i].year,
-                        buffers.dateBuffers[col - 1][i].month,
-                        buffers.dateBuffers[col - 1][i].day
-                    );
+                case SQL_REAL:
+                case SQL_FLOAT:
+                case SQL_DOUBLE:
+                    buffersArrow.float64[col - 1][i] = buffers.doubleBuffers[col - 1][i];
                     break;
-
-                case SQL_SS_TIMESTAMPOFFSET: {
-                    DateTimeOffset sql_value = buffers.datetimeoffsetBuffers[col - 1][i];
-                    int64_t days = dateAsDayCount(
-                        sql_value.year,
-                        sql_value.month,
-                        sql_value.day
-                    );
-                    buffersArrow.ts_micro[col - 1][i] = 
-                        days * 86400 * 1000000 + 
-                        (static_cast<int64_t>(sql_value.hour) - static_cast<int64_t>(sql_value.timezone_hour)) * 3600 * 1000000 +
-                        (static_cast<int64_t>(sql_value.minute) - static_cast<int64_t>(sql_value.timezone_minute)) * 60 * 1000000 +
-                        static_cast<int64_t>(sql_value.second) * 1000000 +
-                        static_cast<int64_t>(sql_value.fraction) / 1000;
+                case SQL_DECIMAL:
+                case SQL_NUMERIC: {
+                    assert(0 && "TODO");
                     break;
                 }
                 case SQL_TIMESTAMP:
@@ -4344,6 +4344,36 @@ SQLRETURN FetchArrowBatch_wrap(SqlHandlePtr StatementHandle, py::list& capsules)
                         static_cast<int64_t>(sql_value.fraction) / 1000;
                     break;
                 }
+                case SQL_SS_TIMESTAMPOFFSET: {
+                    DateTimeOffset sql_value = buffers.datetimeoffsetBuffers[col - 1][i];
+                    int64_t days = dateAsDayCount(
+                        sql_value.year,
+                        sql_value.month,
+                        sql_value.day
+                    );
+                    buffersArrow.ts_micro[col - 1][i] = 
+                        days * 86400 * 1000000 + 
+                        (static_cast<int64_t>(sql_value.hour) - static_cast<int64_t>(sql_value.timezone_hour)) * 3600 * 1000000 +
+                        (static_cast<int64_t>(sql_value.minute) - static_cast<int64_t>(sql_value.timezone_minute)) * 60 * 1000000 +
+                        static_cast<int64_t>(sql_value.second) * 1000000 +
+                        static_cast<int64_t>(sql_value.fraction) / 1000;
+                    break;
+                }
+                case SQL_TYPE_DATE:
+                    buffersArrow.date[col - 1][i] = dateAsDayCount(
+                        buffers.dateBuffers[col - 1][i].year,
+                        buffers.dateBuffers[col - 1][i].month,
+                        buffers.dateBuffers[col - 1][i].day
+                    );
+                    break;
+                case SQL_TIME:
+                case SQL_TYPE_TIME:
+                case SQL_SS_TIME2:
+                    assert(0 && "TODO");
+                    break;
+                case SQL_BIT:
+                    assert(0 && "TODO");
+                    break;
                 default: {
                     std::wstring columnName = columnMeta["ColumnName"].cast<std::wstring>();
                     std::ostringstream errorString;
