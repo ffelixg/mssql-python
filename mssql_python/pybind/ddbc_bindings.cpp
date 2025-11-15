@@ -4307,9 +4307,35 @@ SQLRETURN FetchArrowBatch_wrap(SqlHandlePtr StatementHandle, py::list& capsules)
 #endif
                     break;
                 }
-                case SQL_GUID:
-                    assert(0 && "TODO");
+                case SQL_GUID: {
+                    // GUID is stored as a 36-character string in Arrow (e.g., "550e8400-e29b-41d4-a716-446655440000")
+                    // Each GUID is exactly 36 bytes in UTF-8
+                    auto target_vec = &buffersArrow.var_data[col - 1];
+                    auto start = buffersArrow.var[col - 1][i];
+
+                    // Ensure buffer has space for the GUID string + null terminator
+                    while (target_vec->size() < start + 37) {
+                        target_vec->resize(target_vec->size() * 2);
+                    }
+
+                    // Get the GUID from the buffer
+                    const SQLGUID& guidValue = buffers.guidBuffers[col - 1][i];
+
+                    // Convert GUID to string format: xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx
+                    snprintf(reinterpret_cast<char*>(&target_vec->data()[start]), 37,
+                             "%08x-%04x-%04x-%02x%02x-%02x%02x%02x%02x%02x%02x",
+                             guidValue.Data1,
+                             guidValue.Data2,
+                             guidValue.Data3,
+                             guidValue.Data4[0], guidValue.Data4[1],
+                             guidValue.Data4[2], guidValue.Data4[3],
+                             guidValue.Data4[4], guidValue.Data4[5],
+                             guidValue.Data4[6], guidValue.Data4[7]);
+
+                    // Update offset for next row, ignoring null terminator
+                    buffersArrow.var[col - 1][i + 1] = start + 36;
                     break;
+                }
                 case SQL_TINYINT:
                     assert(0 && "TODO");
                     break;
