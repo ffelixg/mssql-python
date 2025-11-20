@@ -4180,7 +4180,7 @@ SQLRETURN FetchArrowBatch_wrap(SqlHandlePtr StatementHandle, py::list& capsules)
                 std::ostringstream errorString;
                 errorString << "Unsupported data type for Arrow batch fetch for column - " << columnName.c_str()
                             << ", Type - " << dataType << ", column ID - " << (i + 1);
-                LOG(errorString.str());
+                LOG(errorString.str().c_str());
                 ThrowStdException(errorString.str());
                 break;
         }
@@ -4446,7 +4446,7 @@ SQLRETURN FetchArrowBatch_wrap(SqlHandlePtr StatementHandle, py::list& capsules)
                     std::ostringstream errorString;
                     errorString << "Unsupported data type for column - " << columnName.c_str()
                                 << ", Type - " << dataType << ", column ID - " << col;
-                    LOG(errorString.str());
+                    LOG(errorString.str().c_str());
                     ThrowStdException(errorString.str());
                     break;
                 }
@@ -4543,7 +4543,7 @@ SQLRETURN FetchArrowBatch_wrap(SqlHandlePtr StatementHandle, py::list& capsules)
                 std::ostringstream errorString;
                 errorString << "Unsupported data type for column - " << columnName.c_str()
                             << ", Type - " << dataType << ", column ID - " << (col + 1);
-                LOG(errorString.str());
+                LOG(errorString.str().c_str());
                 ThrowStdException(errorString.str());
                 break;
             }
