@@ -4249,6 +4249,24 @@ SQLRETURN FetchArrowBatch_wrap(SqlHandlePtr StatementHandle, py::list& capsules)
                 size_t bytePos = i / 8;
                 size_t bitPos = i % 8;
                 buffersArrow.valid[col - 1][bytePos] &= ~(1 << bitPos);
+                switch (dataType)
+                {
+                    case SQL_CHAR:
+                    case SQL_VARCHAR:
+                    case SQL_LONGVARCHAR:
+                    case SQL_SS_XML:
+                    case SQL_WCHAR:
+                    case SQL_WVARCHAR:
+                    case SQL_WLONGVARCHAR:
+                    case SQL_GUID:
+                    case SQL_BINARY:
+                    case SQL_VARBINARY:
+                    case SQL_LONGVARBINARY:
+                        buffersArrow.var[col - 1][i + 1] = buffersArrow.var[col - 1][i];
+                        break;
+                    default:
+                        break;
+                }
                 continue;
             } else if (dataLen < 0) {
                 // Negative value is unexpected, log column index, SQL type & raise exception
