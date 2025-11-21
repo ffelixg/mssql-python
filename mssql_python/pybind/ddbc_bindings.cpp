@@ -4240,7 +4240,6 @@ SQLRETURN FetchArrowBatch_wrap(SqlHandlePtr StatementHandle, py::list& capsules)
             SQLULEN columnSize = columnMeta["ColumnSize"].cast<SQLULEN>();
             SQLLEN dataLen = buffers.indicators[col - 1][i];
 
-            // TODO: variable length data needs special handling, this logic wont suffice
             // This value indicates that the driver cannot determine the length of the data
             if (dataLen == SQL_NO_TOTAL) {
                 assert(false && "Is this actually possible?");
@@ -4249,6 +4248,9 @@ SQLRETURN FetchArrowBatch_wrap(SqlHandlePtr StatementHandle, py::list& capsules)
                 size_t bytePos = i / 8;
                 size_t bitPos = i % 8;
                 buffersArrow.valid[col - 1][bytePos] &= ~(1 << bitPos);
+
+                // Value buffer for variable length data types needs to be set appropriately
+                // as it will be used by the next non null value
                 switch (dataType)
                 {
                     case SQL_CHAR:
@@ -4308,7 +4310,6 @@ SQLRETURN FetchArrowBatch_wrap(SqlHandlePtr StatementHandle, py::list& capsules)
                 case SQL_WCHAR:
                 case SQL_WVARCHAR:
                 case SQL_WLONGVARCHAR: {
-                    // uint64_t fetchBufferSize = (columnSize + 1) * sizeof(SQLWCHAR);  // +1 for null terminator
                     assert(dataLen % sizeof(SQLWCHAR) == 0);
                     auto dataLenW = dataLen / sizeof(SQLWCHAR);
                     auto wcharSource = &buffers.wcharBuffers[col - 1][i * (columnSize + 1)];
@@ -4378,7 +4379,20 @@ SQLRETURN FetchArrowBatch_wrap(SqlHandlePtr StatementHandle, py::list& capsules)
                     break;
                 case SQL_DECIMAL:
                 case SQL_NUMERIC: {
-                    assert(0 && "TODO");
+                    assert(dataLen <= MAX_DIGITS_IN_NUMERIC);
+                    __int128_t decimalValue = 0;
+                    auto start = i * MAX_DIGITS_IN_NUMERIC;
+                    for (SQLULEN idx = start; idx < start + dataLen; idx++) {
+                        char digitChar = buffers.charBuffers[col - 1][idx];
+                        if (digitChar == '-') {
+                            decimalValue = -decimalValue;
+                        } else if (digitChar >= '0' && digitChar <= '9') {
+                            decimalValue = decimalValue * 10 + (digitChar - '0');
+                        }
+                        std::cout << idx << ":" << digitChar << " ";
+                    }
+                    std::cout << std::endl;
+                    buffersArrow.decimal[col - 1][i] = decimalValue;
                     break;
                 }
                 case SQL_TIMESTAMP:
