@@ -3993,6 +3993,108 @@ SQLRETURN FetchMany_wrap(SqlHandlePtr StatementHandle, py::list& rows, int fetch
     return ret;
 }
 
+// GetDataVar - Progressively fetches variable-length column data using SQLGetData.
+//
+// Calls SQLGetData repeatedly, reallocating the buffer as needed, until all data is retrieved.
+// Handles both fixed-size and unknown-size (SQL_NO_TOTAL) responses from the driver.
+//
+// @param hStmt: Statement handle
+// @param colNumber: 1-based column index
+// @param cType: SQL C data type (SQL_C_CHAR, SQL_C_WCHAR, or SQL_C_BINARY)
+// @param dataVec: Reference to vector that will hold the fetched data (will be resized as needed)
+// @param indicator: Pointer to indicator value (SQL_NULL_DATA for NULL, or data length)
+//
+// @return SQLRETURN: SQL_SUCCESS on success, or error code on failure
+template<typename T>
+SQLRETURN GetDataVar(SQLHSTMT hStmt,
+                    SQLUSMALLINT colNumber,
+                    SQLSMALLINT cType,
+                    std::vector<T>& dataVec,
+                    SQLLEN* indicator) {
+    if (!SQLGetData_ptr) {
+        ThrowStdException("SQLGetData function not loaded");
+    }
+
+    size_t start = 0;
+    size_t end = 0;
+    
+    // Determine null terminator size based on data type
+    size_t sizeNullTerminator = 0;
+    switch (cType) {
+        case SQL_C_WCHAR:
+        case SQL_C_CHAR:
+            sizeNullTerminator = 1;
+            break;
+        case SQL_C_BINARY:
+            sizeNullTerminator = 0;
+            break;
+        default:
+            ThrowStdException("GetDataVar only supports SQL_C_CHAR, SQL_C_WCHAR, and SQL_C_BINARY");
+    }
+    
+    // Ensure initial buffer has space for at least the null terminator
+    if (dataVec.size() < sizeNullTerminator) {
+        dataVec.resize(sizeNullTerminator);
+    }
+
+    while (true) {
+        SQLLEN localInd = 0;
+        SQLRETURN ret = SQLGetData_ptr(
+            hStmt,
+            colNumber,
+            cType,
+            reinterpret_cast<uint8_t*>(dataVec.data() + start),
+            sizeof(T) * (dataVec.size() - start),  // Available buffer size from start position
+            &localInd
+        );
+
+        // Handle NULL data
+        if (localInd == SQL_NULL_DATA) {
+            *indicator = SQL_NULL_DATA;
+            return SQL_SUCCESS;
+        }
+
+        // Check for errors (excluding SQL_SUCCESS_WITH_INFO which means more data available)
+        if (ret == SQL_ERROR || ret == SQL_INVALID_HANDLE) {
+            return ret;
+        }
+
+        // SQL_SUCCESS or SQL_NO_DATA means we got all the data
+        if (ret == SQL_SUCCESS || ret == SQL_NO_DATA) {
+            if (localInd >= 0) {
+                *indicator = static_cast<SQLLEN>(start) * sizeof(T) + localInd;
+            } else {
+                *indicator = localInd;  // Preserve SQL_NO_TOTAL or other negative values
+            }
+            break;
+        }
+
+        // SQL_SUCCESS_WITH_INFO means buffer was too small, need to continue fetching
+        if (ret == SQL_SUCCESS_WITH_INFO) {
+            // Determine how much more space we need
+            if (localInd < 0) {
+                // SQL_NO_TOTAL: driver doesn't know total size, double the buffer
+                end = dataVec.size() * 2;
+            } else {
+                // Driver returned total size: allocate exactly what we need
+                assert(localInd % sizeof(T) == 0);
+                end = start + static_cast<size_t>(localInd) / sizeof(T) + sizeNullTerminator;
+            }
+            
+            // The next read starts where the null terminator would have been placed
+            start = dataVec.size() - sizeNullTerminator;
+            
+            // Resize buffer for next iteration
+            dataVec.resize(end);
+        } else {
+            // Unexpected return code
+            return ret;
+        }
+    }
+
+    return SQL_SUCCESS;
+}
+
 void ArrowSchema_release(struct ArrowSchema* schema) {
     assert (schema != nullptr);
     assert (schema->release != nullptr);
@@ -4054,7 +4156,7 @@ int32_t dateAsDayCount(SQLUSMALLINT year, SQLUSMALLINT month, SQLUSMALLINT day) 
 
 SQLRETURN FetchArrowBatch_wrap(SqlHandlePtr StatementHandle, py::list& capsules) {
     ssize_t arrowBatchSize = 500;
-    ssize_t fetchSize = 1;
+    ssize_t fetchSize = arrowBatchSize;
     SQLRETURN ret;
     SQLHSTMT hStmt = StatementHandle->get();
     // Retrieve column count
@@ -4069,7 +4171,7 @@ SQLRETURN FetchArrowBatch_wrap(SqlHandlePtr StatementHandle, py::list& capsules)
     }
 
     auto batch_children = new ArrowSchema* [numCols];
-    std::vector<SQLUSMALLINT> lobColumns;
+    bool hasLobColumns = false;
 
     ColumnBuffersArrow buffersArrow(numCols);
     for (SQLSMALLINT i = 0; i < numCols; i++) {
@@ -4081,7 +4183,8 @@ SQLRETURN FetchArrowBatch_wrap(SqlHandlePtr StatementHandle, py::list& capsules)
              dataType == SQL_VARCHAR || dataType == SQL_LONGVARCHAR ||
              dataType == SQL_VARBINARY || dataType == SQL_LONGVARBINARY || dataType == SQL_SS_XML) &&
             (columnSize == 0 || columnSize == SQL_NO_TOTAL || columnSize > SQL_MAX_LOB_SIZE)) {
-            lobColumns.push_back(i + 1); // 1-based
+                hasLobColumns = true;
+                fetchSize = 1; // LOBs require row-by-row fetch
         }
 
         std::string columnName = colMeta["ColumnName"].cast<std::string>();
@@ -4188,8 +4291,6 @@ SQLRETURN FetchArrowBatch_wrap(SqlHandlePtr StatementHandle, py::list& capsules)
         std::memset(buffersArrow.valid[i].get(), 0xFF, (arrowBatchSize + 7) / 8);
     }
 
-    assert(lobColumns.empty() && "Arrow batch fetch does not support LOB columns yet");
-
     auto arrow_schema_batch = new ArrowSchema({
         .format = strdup("+s"),
         .name = strdup(""),
@@ -4209,11 +4310,13 @@ SQLRETURN FetchArrowBatch_wrap(SqlHandlePtr StatementHandle, py::list& capsules)
     // Initialize column buffers
     ColumnBuffers buffers(numCols, fetchSize);
 
-    // Bind columns
-    ret = SQLBindColums(hStmt, buffers, columnNames, numCols, fetchSize);
-    if (!SQL_SUCCEEDED(ret)) {
-        LOG("Error when binding columns");
-        return ret;
+    if (!hasLobColumns) {
+        // Bind columns
+        ret = SQLBindColums(hStmt, buffers, columnNames, numCols, fetchSize);
+        if (!SQL_SUCCEEDED(ret)) {
+            LOG("Error when binding columns");
+            return ret;
+        }
     }
 
     SQLULEN numRowsFetched;
@@ -4241,6 +4344,196 @@ SQLRETURN FetchArrowBatch_wrap(SqlHandlePtr StatementHandle, py::list& capsules)
                 auto columnMeta = columnNames[col - 1].cast<py::dict>();
                 SQLSMALLINT dataType = columnMeta["DataType"].cast<SQLSMALLINT>();
                 SQLULEN columnSize = columnMeta["ColumnSize"].cast<SQLULEN>();
+
+                if (hasLobColumns) {
+                    assert(idxRowSql == 0 && "GetData only works one row at a time");
+
+                    switch(dataType) {
+                        case SQL_BINARY:
+                        case SQL_VARBINARY:
+                        case SQL_LONGVARBINARY: {
+                            GetDataVar(
+                                hStmt,
+                                col,
+                                SQL_C_BINARY,
+                                buffers.charBuffers[col - 1],
+                                buffers.indicators[col - 1].data()
+                            );
+                            break;
+                        }
+                        case SQL_CHAR:
+                        case SQL_VARCHAR:
+                        case SQL_LONGVARCHAR: {
+                            GetDataVar(
+                                hStmt,
+                                col,
+                                SQL_C_CHAR,
+                                buffers.charBuffers[col - 1],
+                                buffers.indicators[col - 1].data()
+                            );
+                            break;
+                        }
+                        case SQL_SS_XML:
+                        case SQL_WCHAR:
+                        case SQL_WVARCHAR:
+                        case SQL_WLONGVARCHAR: {
+                            GetDataVar(
+                                hStmt,
+                                col,
+                                SQL_C_WCHAR,
+                                buffers.wcharBuffers[col - 1],
+                                buffers.indicators[col - 1].data()
+                            );
+                            break;
+                        }
+                        case SQL_INTEGER: {
+                            buffers.intBuffers[col - 1].resize(1);
+                            SQLGetData_ptr(
+                                hStmt, col, SQL_C_SLONG,
+                                buffers.intBuffers[col - 1].data(),
+                                sizeof(SQLINTEGER),
+                                buffers.indicators[col - 1].data()
+                            );
+                            break;
+                        }
+                        case SQL_SMALLINT: {
+                            buffers.smallIntBuffers[col - 1].resize(1);
+                            SQLGetData_ptr(
+                                hStmt, col, SQL_C_SSHORT,
+                                buffers.smallIntBuffers[col - 1].data(),
+                                sizeof(SQLSMALLINT),
+                                buffers.indicators[col - 1].data()
+                            );
+                            break;
+                        }
+                        case SQL_TINYINT: {
+                            buffers.charBuffers[col - 1].resize(1);
+                            SQLGetData_ptr(
+                                hStmt, col, SQL_C_TINYINT,
+                                buffers.charBuffers[col - 1].data(),
+                                sizeof(SQLCHAR),
+                                buffers.indicators[col - 1].data()
+                            );
+                            break;
+                        }
+                        case SQL_BIT: {
+                            buffers.charBuffers[col - 1].resize(1);
+                            SQLGetData_ptr(
+                                hStmt, col, SQL_C_BIT,
+                                buffers.charBuffers[col - 1].data(),
+                                sizeof(SQLCHAR),
+                                buffers.indicators[col - 1].data()
+                            );
+                            break;
+                        }
+                        case SQL_REAL: {
+                            buffers.realBuffers[col - 1].resize(1);
+                            SQLGetData_ptr(
+                                hStmt, col, SQL_C_FLOAT,
+                                buffers.realBuffers[col - 1].data(),
+                                sizeof(SQLREAL),
+                                buffers.indicators[col - 1].data()
+                            );
+                            break;
+                        }
+                        case SQL_DECIMAL:
+                        case SQL_NUMERIC: {
+                            buffers.charBuffers[col - 1].resize(MAX_DIGITS_IN_NUMERIC);
+                            SQLGetData_ptr(
+                                hStmt, col, SQL_C_CHAR,
+                                buffers.charBuffers[col - 1].data(),
+                                MAX_DIGITS_IN_NUMERIC * sizeof(SQLCHAR),
+                                buffers.indicators[col - 1].data()
+                            );
+                            break;
+                        }
+                        case SQL_DOUBLE:
+                        case SQL_FLOAT: {
+                            buffers.doubleBuffers[col - 1].resize(1);
+                            SQLGetData_ptr(
+                                hStmt, col, SQL_C_DOUBLE,
+                                buffers.doubleBuffers[col - 1].data(),
+                                sizeof(SQLDOUBLE),
+                                buffers.indicators[col - 1].data()
+                            );
+                            break;
+                        }
+                        case SQL_TIMESTAMP:
+                        case SQL_TYPE_TIMESTAMP:
+                        case SQL_DATETIME: {
+                            buffers.timestampBuffers[col - 1].resize(1);
+                            SQLGetData_ptr(
+                                hStmt, col, SQL_C_TYPE_TIMESTAMP,
+                                buffers.timestampBuffers[col - 1].data(),
+                                sizeof(SQL_TIMESTAMP_STRUCT),
+                                buffers.indicators[col - 1].data()
+                            );
+                            break;
+                        }
+                        case SQL_BIGINT: {
+                            buffers.bigIntBuffers[col - 1].resize(1);
+                            SQLGetData_ptr(
+                                hStmt, col, SQL_C_SBIGINT,
+                                buffers.bigIntBuffers[col - 1].data(),
+                                sizeof(SQLBIGINT),
+                                buffers.indicators[col - 1].data()
+                            );
+                            break;
+                        }
+                        case SQL_TYPE_DATE: {
+                            buffers.dateBuffers[col - 1].resize(1);
+                            SQLGetData_ptr(
+                                hStmt, col, SQL_C_TYPE_DATE,
+                                buffers.dateBuffers[col - 1].data(),
+                                sizeof(SQL_DATE_STRUCT),
+                                buffers.indicators[col - 1].data()
+                            );
+                            break;
+                        }
+                        case SQL_TIME:
+                        case SQL_TYPE_TIME:
+                        case SQL_SS_TIME2: {
+                            buffers.timeBuffers[col - 1].resize(1);
+                            SQLGetData_ptr(
+                                hStmt, col, SQL_C_TYPE_TIME,
+                                buffers.timeBuffers[col - 1].data(),
+                                sizeof(SQL_TIME_STRUCT),
+                                buffers.indicators[col - 1].data()
+                            );
+                            break;
+                        }
+                        case SQL_GUID: {
+                            buffers.guidBuffers[col - 1].resize(1);
+                            SQLGetData_ptr(
+                                hStmt, col, SQL_C_GUID,
+                                buffers.guidBuffers[col - 1].data(),
+                                sizeof(SQLGUID),
+                                buffers.indicators[col - 1].data()
+                            );
+                            break;
+                        }
+                        case SQL_SS_TIMESTAMPOFFSET: {
+                            buffers.datetimeoffsetBuffers[col - 1].resize(1);
+                            SQLGetData_ptr(
+                                hStmt, col, SQL_C_SS_TIMESTAMPOFFSET,
+                                buffers.datetimeoffsetBuffers[col - 1].data(),
+                                sizeof(DateTimeOffset),
+                                buffers.indicators[col - 1].data()
+                            );
+                            break;
+                        }
+                        default: {
+                            std::wstring columnName = columnMeta["ColumnName"].cast<std::wstring>();
+                            std::ostringstream errorString;
+                            errorString << "Unsupported data type for column - " << columnName.c_str()
+                                        << ", Type - " << dataType << ", column ID - " << col;
+                            LOG("SQLGetData: %s", errorString.str().c_str());
+                            ThrowStdException(errorString.str());
+                            break;
+                        }
+                    }
+                }
+
                 SQLLEN dataLen = buffers.indicators[col - 1][idxRowSql];
 
                 // This value indicates that the driver cannot determine the length of the data
