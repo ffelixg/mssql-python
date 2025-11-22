@@ -4189,11 +4189,16 @@ SQLRETURN FetchArrowBatch_wrap(
     auto batch_children = new ArrowSchema* [numCols];
     bool hasLobColumns = false;
 
+    std::vector<SQLSMALLINT> dataTypes(numCols);
+    std::vector<SQLULEN> columnSizes(numCols);
+
     ColumnBuffersArrow buffersArrow(numCols);
     for (SQLSMALLINT i = 0; i < numCols; i++) {
         auto colMeta = columnNames[i].cast<py::dict>();
         SQLSMALLINT dataType = colMeta["DataType"].cast<SQLSMALLINT>();
         SQLULEN columnSize = colMeta["ColumnSize"].cast<SQLULEN>();
+        dataTypes[i] = dataType;
+        columnSizes[i] = columnSize;
 
         if ((dataType == SQL_WVARCHAR || dataType == SQL_WLONGVARCHAR || 
              dataType == SQL_VARCHAR || dataType == SQL_LONGVARCHAR ||
@@ -4323,6 +4328,20 @@ SQLRETURN FetchArrowBatch_wrap(
     });
     capsules.append(caps);
 
+    if (fetchSize > 1) {
+        // An overly large fetch size doesn't seem to help performance
+        SQLSMALLINT searchStart = 64;
+        if (arrowBatchSize < 64) {
+            searchStart = static_cast<SQLSMALLINT>(arrowBatchSize);
+        }
+        for (SQLSMALLINT maybeNewSize = searchStart; maybeNewSize >= 1; maybeNewSize -= 1) {
+            if (arrowBatchSize % maybeNewSize == 0) {
+                fetchSize = maybeNewSize;
+                break;
+            }
+        }
+    }
+
     // Initialize column buffers
     ColumnBuffers buffers(numCols, fetchSize);
 
@@ -4341,7 +4360,11 @@ SQLRETURN FetchArrowBatch_wrap(
 
 
     size_t idxRowArrow = 0;
+    // arrowBatchSize % fetchSize == 0 ensures that any followup (even non-arrow) fetches
+    // start with a fresh batch
     assert(fetchSize == 0 || arrowBatchSize % fetchSize == 0);
+    assert(fetchSize <= arrowBatchSize);
+
     while (idxRowArrow < arrowBatchSize) {
         ret = SQLFetch_ptr(hStmt);
         if (ret == SQL_NO_DATA) {
@@ -4357,9 +4380,8 @@ SQLRETURN FetchArrowBatch_wrap(
         assert(numRowsFetched + idxRowArrow <= static_cast<SQLULEN>(arrowBatchSize));
         for (SQLULEN idxRowSql = 0; idxRowSql < numRowsFetched; idxRowSql++) {
             for (SQLUSMALLINT col = 1; col <= numCols; col++) {
-                auto columnMeta = columnNames[col - 1].cast<py::dict>();
-                SQLSMALLINT dataType = columnMeta["DataType"].cast<SQLSMALLINT>();
-                SQLULEN columnSize = columnMeta["ColumnSize"].cast<SQLULEN>();
+                auto dataType = dataTypes[col - 1];
+                auto columnSize = columnSizes[col - 1];
 
                 if (hasLobColumns) {
                     assert(idxRowSql == 0 && "GetData only works one row at a time");
@@ -4539,10 +4561,9 @@ SQLRETURN FetchArrowBatch_wrap(
                             break;
                         }
                         default: {
-                            std::wstring columnName = columnMeta["ColumnName"].cast<std::wstring>();
                             std::ostringstream errorString;
-                            errorString << "Unsupported data type for column - " << columnName.c_str()
-                                        << ", Type - " << dataType << ", column ID - " << col;
+                            errorString << "Unsupported data type for column ID - " << col
+                                        << ", Type - " << dataType;
                             LOG("SQLGetData: %s", errorString.str().c_str());
                             ThrowStdException(errorString.str());
                             break;
@@ -4774,10 +4795,9 @@ SQLRETURN FetchArrowBatch_wrap(
                         break;
                     }
                     default: {
-                        std::wstring columnName = columnMeta["ColumnName"].cast<std::wstring>();
                         std::ostringstream errorString;
-                        errorString << "Unsupported data type for column - " << columnName.c_str()
-                                    << ", Type - " << dataType << ", column ID - " << col;
+                        errorString << "Unsupported data type for column ID - " << col
+                                    << ", Type - " << dataType;
                         LOG(errorString.str().c_str());
                         ThrowStdException(errorString.str());
                         break;
@@ -4804,8 +4824,7 @@ SQLRETURN FetchArrowBatch_wrap(
     arrow_array_batch->buffers[1] = new int[1];
 
     for (SQLUSMALLINT col = 0; col < numCols; col++) {
-        auto columnMeta = columnNames[col].cast<py::dict>();
-        SQLSMALLINT dataType = columnMeta["DataType"].cast<SQLSMALLINT>();
+        auto dataType = dataTypes[col];
         auto arrow_array_col_buffers = new const void* [3];
         memset(arrow_array_col_buffers, 0, sizeof(const void*) * 3);
         // Allocate new memory and copy the data
@@ -4873,10 +4892,9 @@ SQLRETURN FetchArrowBatch_wrap(
                 arrow_array_col_buffers[1] = buffersArrow.bit[col].release();
                 break;
             default: {
-                std::wstring columnName = columnMeta["ColumnName"].cast<std::wstring>();
                 std::ostringstream errorString;
-                errorString << "Unsupported data type for column - " << columnName.c_str()
-                            << ", Type - " << dataType << ", column ID - " << (col + 1);
+                errorString << "Unsupported data type for column ID - " << (col + 1)
+                            << ", Type - " << dataType;
                 LOG(errorString.str().c_str());
                 ThrowStdException(errorString.str());
                 break;
