@@ -4164,6 +4164,9 @@ SQLRETURN FetchArrowBatch_wrap(
     SQLHSTMT hStmt = StatementHandle->get();
     // Retrieve column count
     SQLSMALLINT numCols = SQLNumResultCols_wrap(StatementHandle);
+    if (numCols <= 0) {
+        ThrowStdException("No active result set. Cannot fetch Arrow batch.");
+    }
 
     // Retrieve column metadata
     py::list columnNames;
@@ -4203,19 +4206,19 @@ SQLRETURN FetchArrowBatch_wrap(
             case SQL_WLONGVARCHAR:
             case SQL_GUID:
                 format = strdup("u");
-                buffersArrow.var[i] = std::make_unique<uint32_t[]>(arrowBatchSize);
+                buffersArrow.var[i] = std::make_unique<uint32_t[]>(arrowBatchSize + 1);
                 buffersArrow.var_data[i].resize(arrowBatchSize * 42);
                 // start at offset 0
-                buffersArrow.var_data[i][0] = 0;
+                buffersArrow.var[i][0] = 0;
                 break;
             case SQL_BINARY:
             case SQL_VARBINARY:
             case SQL_LONGVARBINARY:
                 format = strdup("z");
-                buffersArrow.var[i] = std::make_unique<uint32_t[]>(arrowBatchSize);
+                buffersArrow.var[i] = std::make_unique<uint32_t[]>(arrowBatchSize + 1);
                 buffersArrow.var_data[i].resize(arrowBatchSize * 42);
                 // start at offset 0
-                buffersArrow.var_data[i][0] = 0;
+                buffersArrow.var[i][0] = 0;
                 break;
             case SQL_TINYINT:
                 format = strdup("C");
@@ -4321,14 +4324,14 @@ SQLRETURN FetchArrowBatch_wrap(
             return ret;
         }
     }
-
+    
     SQLULEN numRowsFetched;
     SQLSetStmtAttr_ptr(hStmt, SQL_ATTR_ROW_ARRAY_SIZE, (SQLPOINTER)(intptr_t)fetchSize, 0);
     SQLSetStmtAttr_ptr(hStmt, SQL_ATTR_ROWS_FETCHED_PTR, &numRowsFetched, 0);
 
 
     size_t idxRowArrow = 0;
-    assert(arrowBatchSize % fetchSize == 0);
+    assert(fetchSize == 0 || arrowBatchSize % fetchSize == 0);
     while (idxRowArrow < arrowBatchSize) {
         ret = SQLFetch_ptr(hStmt);
         if (ret == SQL_NO_DATA) {
