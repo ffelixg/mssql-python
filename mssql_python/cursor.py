@@ -2198,7 +2198,7 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
             # On error, don't increment rownumber - rethrow the error
             raise e
 
-    def fetch_arrow_batch(self) -> Any:
+    def fetch_arrow_batch(self, batch_length: int) -> Any:
         self._check_closed()  # Check if the cursor is closed
         if not self._has_result_set and self.description:
             self._reset_rownumber()
@@ -2210,7 +2210,7 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
                 "pyarrow is required for fetch_arrow_batch(). Please install pyarrow."
             ) from e
         capsules = []
-        ret = ddbc_bindings.DDBCSQLFetchArrowBatch(self.hstmt, capsules)
+        ret = ddbc_bindings.DDBCSQLFetchArrowBatch(self.hstmt, capsules, batch_length)
         assert ret in (0, 1), ret
         schema_capsule = capsules[0]
         array_capsule = capsules[1]

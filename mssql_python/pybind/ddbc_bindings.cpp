@@ -4164,8 +4164,11 @@ int32_t dateAsDayCount(SQLUSMALLINT year, SQLUSMALLINT month, SQLUSMALLINT day) 
     return time_since_epoch / 86400;
 }
 
-SQLRETURN FetchArrowBatch_wrap(SqlHandlePtr StatementHandle, py::list& capsules) {
-    ssize_t arrowBatchSize = 500;
+SQLRETURN FetchArrowBatch_wrap(
+    SqlHandlePtr StatementHandle,
+    py::list& capsules,
+    ssize_t arrowBatchSize
+) {
     ssize_t fetchSize = arrowBatchSize;
     SQLRETURN ret;
     SQLHSTMT hStmt = StatementHandle->get();
