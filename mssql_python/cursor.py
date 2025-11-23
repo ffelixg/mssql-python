@@ -25,7 +25,10 @@ from mssql_python.row import Row
 from mssql_python import get_settings
 
 if TYPE_CHECKING:
+    import pyarrow  # type: ignore
     from mssql_python.connection import Connection
+else:
+    pyarrow = None
 
 # Constants for string handling
 MAX_INLINE_CHAR: int = (
@@ -2195,24 +2198,63 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
             # On error, don't increment rownumber - rethrow the error
             raise e
 
-    def fetch_arrow_batch(self, batch_length: int) -> Any:
+    def arrow_batch(self, batch_size: int=8192) -> "pyarrow.RecordBatch":
         self._check_closed()  # Check if the cursor is closed
         if not self._has_result_set and self.description:
             self._reset_rownumber()
 
         try:
-            import pyarrow as pa
+            import pyarrow
         except ImportError as e:
             raise ImportError(
-                "pyarrow is required for fetch_arrow_batch(). Please install pyarrow."
+                "pyarrow is required for arrow_batch(). Please install pyarrow."
             ) from e
+
         capsules = []
-        ret = ddbc_bindings.DDBCSQLFetchArrowBatch(self.hstmt, capsules, batch_length)
+        ret = ddbc_bindings.DDBCSQLFetchArrowBatch(self.hstmt, capsules, batch_size)
         assert ret in (0, 1), ret
-        schema_capsule = capsules[0]
-        array_capsule = capsules[1]
-        batch = pa.RecordBatch._import_from_c_capsule(schema_capsule, array_capsule)
+        batch = pyarrow.RecordBatch._import_from_c_capsule(*capsules)
         return batch
+
+    def arrow(self, batch_size: int = 8192) -> "pyarrow.Table":
+        try:
+            import pyarrow
+        except ImportError as e:
+            raise ImportError(
+                "pyarrow is required for arrow(). Please install pyarrow."
+            ) from e
+
+        assert batch_size > 0
+        batches: list["pyarrow.RecordBatch"] = []
+        while True:
+            batch = self.arrow_batch(batch_size)
+            if batch.num_rows < batch_size:
+                if not batches or batch.num_rows > 0:
+                    batches.append(batch)
+                break
+            batches.append(batch)
+        return pyarrow.Table.from_batches(batches, schema=batches[0].schema)
+
+    def arrow_reader(self, batch_size: int = 8192) -> "pyarrow.RecordBatchReader":
+        """
+        Fetch the result as a pyarrow RecordBatchReader.
+        """
+        try:
+            import pyarrow
+        except ImportError as e:
+            raise ImportError(
+                "pyarrow is required for fetch_record_batch(). Please install pyarrow."
+            ) from e
+
+        # Fetch schema without advancing cursor
+        schema_batch = self.arrow_batch(0)
+        schema = schema_batch.schema
+        
+        def batch_generator():
+            while len(batch := self.arrow_batch(batch_size)) > 0:
+                yield batch
+                
+        return pyarrow.RecordBatchReader.from_batches(schema, batch_generator())
 
     def nextset(self) -> Union[bool, None]:
         """
@@ -2389,7 +2431,6 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
         Destructor to ensure the cursor is closed when it is no longer needed.
         This is a safety net to ensure resources are cleaned up
         even if close() was not called explicitly.
-        If the cursor is already closed, it will not raise an exception during cleanup.
         """
         if "closed" not in self.__dict__ or not self.closed:
             try:
