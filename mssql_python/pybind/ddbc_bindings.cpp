@@ -4195,7 +4195,9 @@ SQLRETURN FetchArrowBatch_wrap(
              dataType == SQL_VARBINARY || dataType == SQL_LONGVARBINARY || dataType == SQL_SS_XML) &&
             (columnSize == 0 || columnSize == SQL_NO_TOTAL || columnSize > SQL_MAX_LOB_SIZE)) {
                 hasLobColumns = true;
-                fetchSize = 1; // LOBs require row-by-row fetch
+                if (fetchSize > 1) {
+                    fetchSize = 1; // LOBs require row-by-row fetch
+                }
         }
 
         std::string columnName = colMeta["ColumnName"].cast<std::string>();
@@ -4335,7 +4337,7 @@ SQLRETURN FetchArrowBatch_wrap(
     // Initialize column buffers
     ColumnBuffers buffers(numCols, fetchSize);
 
-    if (!hasLobColumns) {
+    if (!hasLobColumns && fetchSize > 0) {
         // Bind columns
         ret = SQLBindColums(hStmt, buffers, columnNames, numCols, fetchSize);
         if (!SQL_SUCCEEDED(ret)) {
