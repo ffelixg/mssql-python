@@ -4186,11 +4186,12 @@ SQLRETURN FetchArrowBatch_wrap(
         return ret;
     }
 
-    auto batch_children = new ArrowSchema* [numCols];
     bool hasLobColumns = false;
 
     std::vector<SQLSMALLINT> dataTypes(numCols);
     std::vector<SQLULEN> columnSizes(numCols);
+    std::vector<std::unique_ptr<char[]>> columnFormats(numCols);
+    std::vector<std::unique_ptr<char[]>> columnNamesCStr(numCols);
 
     ColumnBuffersArrow buffersArrow(numCols);
     for (SQLSMALLINT i = 0; i < numCols; i++) {
@@ -4211,8 +4212,11 @@ SQLRETURN FetchArrowBatch_wrap(
         }
 
         std::string columnName = colMeta["ColumnName"].cast<std::string>();
+        size_t nameLen = columnName.length() + 1;
+        columnNamesCStr[i] = std::make_unique<char[]>(nameLen);
+        std::memcpy(columnNamesCStr[i].get(), columnName.c_str(), nameLen);
 
-        char* format = nullptr;
+        const char* format = nullptr;
         switch(dataType) {
             case SQL_CHAR:
             case SQL_VARCHAR:
@@ -4222,7 +4226,7 @@ SQLRETURN FetchArrowBatch_wrap(
             case SQL_WVARCHAR:
             case SQL_WLONGVARCHAR:
             case SQL_GUID:
-                format = strdup("u");
+                format = "u";
                 buffersArrow.var[i] = std::make_unique<uint32_t[]>(arrowBatchSize + 1);
                 buffersArrow.var_data[i].resize(arrowBatchSize * 42);
                 // start at offset 0
@@ -4231,32 +4235,32 @@ SQLRETURN FetchArrowBatch_wrap(
             case SQL_BINARY:
             case SQL_VARBINARY:
             case SQL_LONGVARBINARY:
-                format = strdup("z");
+                format = "z";
                 buffersArrow.var[i] = std::make_unique<uint32_t[]>(arrowBatchSize + 1);
                 buffersArrow.var_data[i].resize(arrowBatchSize * 42);
                 // start at offset 0
                 buffersArrow.var[i][0] = 0;
                 break;
             case SQL_TINYINT:
-                format = strdup("C");
+                format = "C";
                 buffersArrow.uint8[i] = std::make_unique<uint8_t[]>(arrowBatchSize);
                 break;
             case SQL_SMALLINT:
-                format = strdup("s");
+                format = "s";
                 buffersArrow.int16[i] = std::make_unique<int16_t[]>(arrowBatchSize);
                 break;
             case SQL_INTEGER:
-                format = strdup("i");
+                format = "i";
                 buffersArrow.int32[i] = std::make_unique<int32_t[]>(arrowBatchSize);
                 break;
             case SQL_BIGINT:
-                format = strdup("l");
+                format = "l";
                 buffersArrow.int64[i] = std::make_unique<int64_t[]>(arrowBatchSize);
                 break;
             case SQL_REAL:
             case SQL_FLOAT:
             case SQL_DOUBLE:
-                format = strdup("g");
+                format = "g";
                 buffersArrow.float64[i] = std::make_unique<double[]>(arrowBatchSize);
                 break;
             case SQL_DECIMAL:
@@ -4264,32 +4268,35 @@ SQLRETURN FetchArrowBatch_wrap(
                 std::ostringstream formatStream;
                 formatStream << "d:" << columnSize << "," << colMeta["DecimalDigits"].cast<SQLSMALLINT>();
                 std::string formatStr = formatStream.str();
-                format = strdup(formatStr.c_str());
+                size_t formatLen = formatStr.length() + 1;
+                columnFormats[i] = std::make_unique<char[]>(formatLen);
+                std::memcpy(columnFormats[i].get(), formatStr.c_str(), formatLen);
+                format = columnFormats[i].get();
                 buffersArrow.decimal[i] = std::make_unique<__int128_t[]>(arrowBatchSize);
                 break;
             }
             case SQL_TIMESTAMP:
             case SQL_TYPE_TIMESTAMP:
             case SQL_DATETIME:
-                format = strdup("tsu:");
+                format = "tsu:";
                 buffersArrow.ts_micro[i] = std::make_unique<int64_t[]>(arrowBatchSize);
                 break;
             case SQL_SS_TIMESTAMPOFFSET:
-                format = strdup("tsu:+00:00");
+                format = "tsu:+00:00";
                 buffersArrow.ts_micro[i] = std::make_unique<int64_t[]>(arrowBatchSize);
                 break;
             case SQL_TYPE_DATE:
-                format = strdup("tdD");
+                format = "tdD";
                 buffersArrow.date[i] = std::make_unique<int32_t[]>(arrowBatchSize);
                 break;
             case SQL_TIME:
             case SQL_TYPE_TIME:
             case SQL_SS_TIME2:
-                format = strdup("tts");
+                format = "tts";
                 buffersArrow.time_second[i] = std::make_unique<int32_t[]>(arrowBatchSize);
                 break;
             case SQL_BIT:
-                format = strdup("b");
+                format = "b";
                 buffersArrow.bit[i] = std::make_unique<uint8_t[]>((arrowBatchSize + 7) / 8);
                 break;
             default:
@@ -4302,33 +4309,17 @@ SQLRETURN FetchArrowBatch_wrap(
                 break;
         }
         
-        auto arrow_schema = new ArrowSchema({
-            .format = format,
-            .name = strdup(columnName.c_str()),
-            .release = ArrowSchema_release,
-        });
-        batch_children[i] = arrow_schema;
+        // Store format string if not already stored (for non-decimal types)
+        if (!columnFormats[i]) {
+            size_t formatLen = std::strlen(format) + 1;
+            columnFormats[i] = std::make_unique<char[]>(formatLen);
+            std::memcpy(columnFormats[i].get(), format, formatLen);
+        }
 
         buffersArrow.valid[i] = std::make_unique<uint8_t[]>((arrowBatchSize + 7) / 8);
         // Initialize validity bitmap to all valid
         std::memset(buffersArrow.valid[i].get(), 0xFF, (arrowBatchSize + 7) / 8);
     }
-
-    auto arrow_schema_batch = new ArrowSchema({
-        .format = strdup("+s"),
-        .name = strdup(""),
-        .n_children = numCols,
-        .children = batch_children,
-        .release = ArrowSchema_release,
-    });
-    auto caps = py::capsule((void*)arrow_schema_batch, "arrow_schema", [](void* ptr) {
-        auto arrow_schema = static_cast<ArrowSchema*>(ptr);
-        if (arrow_schema->release) {
-            arrow_schema->release(arrow_schema);
-        }
-        delete arrow_schema;
-    });
-    capsules.append(caps);
 
     if (fetchSize > 1) {
         // An overly large fetch size doesn't seem to help performance
@@ -4650,7 +4641,7 @@ SQLRETURN FetchArrowBatch_wrap(
                         auto wcharSource = &buffers.wcharBuffers[col - 1][idxRowSql * (columnSize + 1)];
                         auto start = buffersArrow.var[col - 1][idxRowArrow];
                         auto target_vec = &buffersArrow.var_data[col - 1];
-    #if defined(_WIN32)
+#if defined(_WIN32)
                         // Convert wide string
                         int dataLenConverted = WideCharToMultiByte(CP_UTF8, 0, wcharSource, dataLenW, NULL, 0, NULL, NULL);
                         while (target_vec->size() < start + dataLenConverted) {
@@ -4658,12 +4649,12 @@ SQLRETURN FetchArrowBatch_wrap(
                         }
                         WideCharToMultiByte(CP_UTF8, 0, wcharSource, dataLenW, &(*target_vec)[start], dataLenConverted, NULL, NULL);
                         buffersArrow.var[col - 1][i + 1] = start + dataLenConverted;
-    #else
+#else
                         // On Unix, use the SQLWCHARToWString utility and then convert to UTF-8
                         std::string utf8str = WideToUTF8(SQLWCHARToWString(wcharSource, dataLenW));
                         std::memcpy(&(*target_vec)[start], utf8str.data(), utf8str.size());
                         buffersArrow.var[col - 1][idxRowArrow + 1] = start + utf8str.size();
-    #endif
+#endif
                         break;
                     }
                     case SQL_GUID: {
@@ -4810,7 +4801,37 @@ SQLRETURN FetchArrowBatch_wrap(
         }
     }
 
+    // Reset attributes before returning to avoid using stack pointers later
+    SQLSetStmtAttr_ptr(hStmt, SQL_ATTR_ROW_ARRAY_SIZE, (SQLPOINTER)1, 0);
+    SQLSetStmtAttr_ptr(hStmt, SQL_ATTR_ROWS_FETCHED_PTR, NULL, 0);
 
+    // Transfer ownerhip of buffers to Arrow structures
+    // Exceptions beyond this point would cause memory leaks
+    auto batch_children = new ArrowSchema* [numCols];
+    for (SQLSMALLINT i = 0; i < numCols; i++) {
+        auto arrow_schema = new ArrowSchema({
+            .format = columnFormats[i].release(),
+            .name = columnNamesCStr[i].release(),
+            .release = ArrowSchema_release,
+        });
+        batch_children[i] = arrow_schema;
+    }
+
+    auto arrow_schema_batch = new ArrowSchema({
+        .format = strdup("+s"),
+        .name = strdup(""),
+        .n_children = numCols,
+        .children = batch_children,
+        .release = ArrowSchema_release,
+    });
+    auto caps = py::capsule((void*)arrow_schema_batch, "arrow_schema", [](void* ptr) {
+        auto arrow_schema = static_cast<ArrowSchema*>(ptr);
+        if (arrow_schema->release) {
+            arrow_schema->release(arrow_schema);
+        }
+        delete arrow_schema;
+    });
+    capsules.append(caps);
 
     auto arrow_array_batch_buffers = new const void* [3];
     memset(arrow_array_batch_buffers, 0, sizeof(const void*) * 3);
@@ -4822,7 +4843,7 @@ SQLRETURN FetchArrowBatch_wrap(
         .children = new ArrowArray* [numCols],
         .release = ArrowArray_release,
     });
-    // dummy buffer
+    // Necessary dummy buffer
     arrow_array_batch->buffers[1] = new int[1];
 
     for (SQLUSMALLINT col = 0; col < numCols; col++) {
@@ -4925,11 +4946,6 @@ SQLRETURN FetchArrowBatch_wrap(
         }
         delete arrow_array;
     }));    
-
-
-    // Reset attributes before returning to avoid using stack pointers later
-    SQLSetStmtAttr_ptr(hStmt, SQL_ATTR_ROW_ARRAY_SIZE, (SQLPOINTER)1, 0);
-    SQLSetStmtAttr_ptr(hStmt, SQL_ATTR_ROWS_FETCHED_PTR, NULL, 0);
 
     return ret;
 }
