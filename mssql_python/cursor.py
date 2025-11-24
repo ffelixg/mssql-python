@@ -2202,6 +2202,16 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
             raise e
 
     def arrow_batch(self, batch_size: int=8192) -> "pyarrow.RecordBatch":
+        """
+        Fetch a single pyarrow Record Batch of the specified size from the
+        query result set.
+
+        Args:
+            batch_size: Maximum number of rows to fetch in the Record Batch.
+
+        Returns:
+            A pyarrow RecordBatch object containing up to batch_size rows.
+        """
         self._check_closed()  # Check if the cursor is closed
         if not self._has_result_set and self.description:
             self._reset_rownumber()
@@ -2220,6 +2230,15 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
         return batch
 
     def arrow(self, batch_size: int = 8192) -> "pyarrow.Table":
+        """
+        Fetch the entire result as a pyarrow Table.
+
+        Args:
+            batch_size: Size of the Record Batches which make up the Table.
+
+        Returns:
+            A pyarrow Table containing all remaining rows from the result set.
+        """
         try:
             import pyarrow
         except ImportError as e:
@@ -2240,7 +2259,15 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
 
     def arrow_reader(self, batch_size: int = 8192) -> "pyarrow.RecordBatchReader":
         """
-        Fetch the result as a pyarrow RecordBatchReader.
+        Fetch the result as a pyarrow RecordBatchReader, which yields Record
+        Batches of the specified size until the current result set is
+        exhausted.
+
+        Args:
+            batch_size: Size of the Record Batches produced by the reader.
+
+        Returns:
+            A pyarrow RecordBatchReader for the result set.
         """
         try:
             import pyarrow
