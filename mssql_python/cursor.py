@@ -2201,7 +2201,7 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
             # On error, don't increment rownumber - rethrow the error
             raise e
 
-    def arrow_batch(self, batch_size: int=8192) -> "pyarrow.RecordBatch":
+    def arrow_batch(self, batch_size: int = 8192) -> "pyarrow.RecordBatch":
         """
         Fetch a single pyarrow Record Batch of the specified size from the
         query result set.
@@ -2243,9 +2243,7 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
         try:
             import pyarrow
         except ImportError as e:
-            raise ImportError(
-                "pyarrow is required for arrow(). Please install pyarrow."
-            ) from e
+            raise ImportError("pyarrow is required for arrow(). Please install pyarrow.") from e
 
         batches: list["pyarrow.RecordBatch"] = []
         while True:
@@ -2279,11 +2277,11 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
         # Fetch schema without advancing cursor
         schema_batch = self.arrow_batch(0)
         schema = schema_batch.schema
-        
+
         def batch_generator():
             while (batch := self.arrow_batch(batch_size)).num_rows > 0:
                 yield batch
-                
+
         return pyarrow.RecordBatchReader.from_batches(schema, batch_generator())
 
     def nextset(self) -> Union[bool, None]:
