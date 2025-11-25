@@ -2461,10 +2461,10 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
         Destructor to ensure the cursor is closed when it is no longer needed.
         This is a safety net to ensure resources are cleaned up
         even if close() was not called explicitly.
+        If the cursor is already closed, it will not raise an exception during cleanup.
         """
         if "closed" not in self.__dict__ or not self.closed:
             try:
-                assert self is not None
                 self.close()
             except Exception as e:  # pylint: disable=broad-exception-caught
                 # Don't raise an exception in __del__, just log it
