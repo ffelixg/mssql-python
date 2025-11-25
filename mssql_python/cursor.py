@@ -2221,8 +2221,9 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
             ) from e
 
         capsules = []
-        ret = ddbc_bindings.DDBCSQLFetchArrowBatch(self.hstmt, capsules, batch_size)
-        assert ret in (0, 1), ret
+        ret = ddbc_bindings.DDBCSQLFetchArrowBatch(self.hstmt, capsules, max(batch_size, 0))
+        check_error(ddbc_sql_const.SQL_HANDLE_STMT.value, self.hstmt, ret)
+
         batch = pyarrow.RecordBatch._import_from_c_capsule(*capsules)
         return batch
 
@@ -2243,11 +2244,10 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
                 "pyarrow is required for arrow(). Please install pyarrow."
             ) from e
 
-        assert batch_size > 0
         batches: list["pyarrow.RecordBatch"] = []
         while True:
             batch = self.arrow_batch(batch_size)
-            if batch.num_rows < batch_size:
+            if batch.num_rows < batch_size or batch_size <= 0:
                 if not batches or batch.num_rows > 0:
                     batches.append(batch)
                 break
