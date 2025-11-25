@@ -4566,10 +4566,7 @@ SQLRETURN FetchArrowBatch_wrap(
 
                 SQLLEN dataLen = buffers.indicators[col - 1][idxRowSql];
 
-                // This value indicates that the driver cannot determine the length of the data
-                if (dataLen == SQL_NO_TOTAL) {
-                    assert(false && "Is this actually possible?");
-                } else if (dataLen == SQL_NULL_DATA) {
+                if (dataLen == SQL_NULL_DATA) {
                     // Mark as null in validity bitmap
                     size_t bytePos = idxRowArrow / 8;
                     size_t bitPos = idxRowArrow % 8;
@@ -4599,9 +4596,8 @@ SQLRETURN FetchArrowBatch_wrap(
                 } else if (dataLen < 0) {
                     // Negative value is unexpected, log column index, SQL type & raise exception
                     LOG("Unexpected negative data length. Column ID - {}, SQL Type - {}, Data Length - {}", col, dataType, dataLen);
-                    ThrowStdException("Unexpected negative data length, check logs for details");
+                    ThrowStdException("Unexpected negative data length.");
                 }
-                assert(dataLen >= 0 && "Data length must be >= 0");
 
                 switch (dataType) {
                     case SQL_BINARY:
@@ -4648,7 +4644,7 @@ SQLRETURN FetchArrowBatch_wrap(
                             target_vec->resize(target_vec->size() * 2);
                         }
                         WideCharToMultiByte(CP_UTF8, 0, wcharSource, dataLenW, &(*target_vec)[start], dataLenConverted, NULL, NULL);
-                        buffersArrow.var[col - 1][i + 1] = start + dataLenConverted;
+                        buffersArrow.var[col - 1][idxRowArrow + 1] = start + dataLenConverted;
 #else
                         // On Unix, use the SQLWCHARToWString utility and then convert to UTF-8
                         std::string utf8str = WideToUTF8(SQLWCHARToWString(wcharSource, dataLenW));
@@ -4761,7 +4757,8 @@ SQLRETURN FetchArrowBatch_wrap(
                     case SQL_TIME:
                     case SQL_TYPE_TIME:
                     case SQL_SS_TIME2: {
-                        // TODO wrong ctype for SQL_SS_TIME2
+                        // NOTE: SQL_SS_TIME2 supports fractional seconds, but SQL_C_TYPE_TIME does not.
+                        // To fully support SQL_SS_TIME2, the corresponding c-type should be used.
                         const SQL_TIME_STRUCT& timeValue = buffers.timeBuffers[col - 1][idxRowSql];
                         buffersArrow.time_second[col - 1][idxRowArrow] = 
                             static_cast<int32_t>(timeValue.hour) * 3600 +

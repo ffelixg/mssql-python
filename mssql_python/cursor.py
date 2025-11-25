@@ -2273,7 +2273,7 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
             import pyarrow
         except ImportError as e:
             raise ImportError(
-                "pyarrow is required for fetch_record_batch(). Please install pyarrow."
+                "pyarrow is required for arrow_reader(). Please install pyarrow."
             ) from e
 
         # Fetch schema without advancing cursor
@@ -2281,7 +2281,7 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
         schema = schema_batch.schema
         
         def batch_generator():
-            while len(batch := self.arrow_batch(batch_size)) > 0:
+            while (batch := self.arrow_batch(batch_size)).num_rows > 0:
                 yield batch
                 
         return pyarrow.RecordBatchReader.from_batches(schema, batch_generator())
