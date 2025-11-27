@@ -4180,6 +4180,7 @@ SQLRETURN FetchArrowBatch_wrap(
 
     std::vector<SQLSMALLINT> dataTypes(numCols);
     std::vector<SQLULEN> columnSizes(numCols);
+    std::vector<bool> columnNullable(numCols);
     std::vector<std::unique_ptr<char[]>> columnFormats(numCols);
     std::vector<std::unique_ptr<char[]>> columnNamesCStr(numCols);
 
@@ -4188,8 +4189,10 @@ SQLRETURN FetchArrowBatch_wrap(
         auto colMeta = columnNames[i].cast<py::dict>();
         SQLSMALLINT dataType = colMeta["DataType"].cast<SQLSMALLINT>();
         SQLULEN columnSize = colMeta["ColumnSize"].cast<SQLULEN>();
+        SQLSMALLINT nullable = colMeta["Nullable"].cast<SQLSMALLINT>();
         dataTypes[i] = dataType;
         columnSizes[i] = columnSize;
+        columnNullable[i] = (nullable != SQL_NO_NULLS);
 
         if ((dataType == SQL_WVARCHAR || dataType == SQL_WLONGVARCHAR || 
              dataType == SQL_VARCHAR || dataType == SQL_LONGVARCHAR ||
@@ -4799,6 +4802,7 @@ SQLRETURN FetchArrowBatch_wrap(
         auto arrow_schema = new ArrowSchema({
             .format = columnFormats[i].release(),
             .name = columnNamesCStr[i].release(),
+            .flags = columnNullable[i] ? 2 : 0, // ARROW_FLAG_NULLABLE
             .release = ArrowSchema_release,
         });
         batch_children[i] = arrow_schema;
