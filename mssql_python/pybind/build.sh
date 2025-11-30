@@ -87,8 +87,8 @@ if [ $? -ne 0 ]; then
 fi
 
 # Build the project
-echo "[DIAGNOSTIC] Running CMake build with: cmake --build . --config Debug"
-cmake --build . --config Debug
+echo "[DIAGNOSTIC] Running CMake build with: cmake --build . --config Release"
+cmake --build . --config Release
 
 # Check if build succeeded
 if [ $? -ne 0 ]; then
