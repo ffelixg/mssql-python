@@ -4697,15 +4697,16 @@ SQLRETURN FetchArrowBatch_wrap(
                         assert(dataLen <= MAX_DIGITS_IN_NUMERIC);
                         __int128_t decimalValue = 0;
                         auto start = idxRowSql * MAX_DIGITS_IN_NUMERIC;
+                        int sign = 1;
                         for (SQLULEN idx = start; idx < start + dataLen; idx++) {
                             char digitChar = buffers.charBuffers[col - 1][idx];
                             if (digitChar == '-') {
-                                decimalValue = -decimalValue;
+                                sign = -1;
                             } else if (digitChar >= '0' && digitChar <= '9') {
                                 decimalValue = decimalValue * 10 + (digitChar - '0');
                             }
                         }
-                        buffersArrow.decimal[col - 1][idxRowArrow] = decimalValue;
+                        buffersArrow.decimal[col - 1][idxRowArrow] = decimalValue * sign;
                         break;
                     }
                     case SQL_TIMESTAMP:
