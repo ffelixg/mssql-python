@@ -193,8 +193,8 @@ struct ColumnBuffersArrow {
 };
 
 struct ArrowSchemaPrivateData {
-    std::string name;
-    std::string format;
+    std::unique_ptr<char[]> name;
+    std::unique_ptr<char[]> format;
 };
 
 #ifndef ARROW_C_DATA_INTERFACE
@@ -217,7 +217,7 @@ struct ArrowSchema {
   // Release callback
   void (*release)(struct ArrowSchema*);
   // Opaque producer-specific data
-  void* private_data;
+  ArrowSchemaPrivateData* private_data;
 };
 
 struct ArrowArray {
@@ -238,16 +238,6 @@ struct ArrowArray {
 };
 
 #endif  // ARROW_C_DATA_INTERFACE
-
-void ReleaseArrowSchema(struct ArrowSchema* schema) {
-    assert(schema != nullptr);
-    assert(schema->release != nullptr);
-    assert(schema->private_data != nullptr);
-    assert(schema->children == nullptr && schema->n_children == 0);
-    auto* private_data = static_cast<ArrowSchemaPrivateData*>(schema->private_data);
-    delete private_data;
-    schema->release = nullptr;
-}
 
 //-------------------------------------------------------------------------------------------------
 // Function pointer initialization
@@ -4816,18 +4806,25 @@ SQLRETURN FetchArrowBatch_wrap(
 
     for (SQLSMALLINT i = 0; i < numCols; i++) {
         auto col_private_data = new ArrowSchemaPrivateData();
-        col_private_data->format = columnFormats[i].get();
-        col_private_data->name = columnNamesCStr[i].get();
-        
+        col_private_data->format = std::move(columnFormats[i]);
+        col_private_data->name = std::move(columnNamesCStr[i]);
+
         auto arrow_schema = new ArrowSchema({
-            .format = col_private_data->format.c_str(),
-            .name = col_private_data->name.c_str(),
+            .format = col_private_data->format.get(),
+            .name = col_private_data->name.get(),
             .metadata = nullptr,
             .flags = static_cast<int64_t>(columnNullable[i] ? ARROW_FLAG_NULLABLE : 0),
             .n_children = 0,
             .children = nullptr,
             .dictionary = nullptr,
-            .release = ReleaseArrowSchema,
+            .release = [](ArrowSchema* schema) {
+                assert(schema != nullptr);
+                assert(schema->release != nullptr);
+                assert(schema->private_data != nullptr);
+                assert(schema->children == nullptr && schema->n_children == 0);
+                delete schema->private_data;
+                schema->release = nullptr;
+            },
             .private_data = col_private_data,
         });
         batch_children[i] = arrow_schema;
