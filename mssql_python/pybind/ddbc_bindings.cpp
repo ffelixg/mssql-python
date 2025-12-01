@@ -234,6 +234,7 @@ struct ArrowSchema {
   // Release callback
   void (*release)(struct ArrowSchema*);
   // Opaque producer-specific data
+  // Only our child-arrays will set this, so we can give it the correct type
   ArrowSchemaPrivateData* private_data;
 };
 
@@ -251,6 +252,7 @@ struct ArrowArray {
   // Release callback
   void (*release)(struct ArrowArray*);
   // Opaque producer-specific data
+  // Only our child-arrays will set this, so we can give it the correct type
   ArrowArrayPrivateData* private_data;
 };
 
@@ -4043,10 +4045,6 @@ SQLRETURN GetDataVar(SQLHSTMT hStmt,
                     SQLSMALLINT cType,
                     std::vector<T>& dataVec,
                     SQLLEN* indicator) {
-    if (!SQLGetData_ptr) {
-        ThrowStdException("SQLGetData function not loaded");
-    }
-
     size_t start = 0;
     size_t end = 0;
     
@@ -4140,7 +4138,7 @@ int32_t dateAsDayCount(SQLUSMALLINT year, SQLUSMALLINT month, SQLUSMALLINT day) 
         ThrowStdException("Date conversion error");
     }
     // Calculate days since epoch
-    assert(time_since_epoch % 86400 == 0); // Ensure time is at midnight, no timezone issues
+    assert(time_since_epoch % 86400 == 0); // Time is at midnight, no timezone issues
     return time_since_epoch / 86400;
 }
 
@@ -4813,7 +4811,7 @@ SQLRETURN FetchArrowBatch_wrap(
                 assert(schema->release != nullptr);
                 assert(schema->private_data != nullptr);
                 assert(schema->children == nullptr && schema->n_children == 0);
-                delete schema->private_data;
+                delete schema->private_data; // Frees format and name
                 schema->release = nullptr;
             },
             .private_data = col_private_data,
@@ -4830,6 +4828,7 @@ SQLRETURN FetchArrowBatch_wrap(
         .children = batch_children,
         .dictionary = nullptr,
         .release = [](ArrowSchema* schema) {
+            // format and name are string literals, no need to free
             assert(schema != nullptr);
             assert(schema->release != nullptr);
             assert(schema->private_data == nullptr);
@@ -4860,6 +4859,8 @@ SQLRETURN FetchArrowBatch_wrap(
 
     auto arrow_array_batch_buffers = new const void* [3];
     memset(arrow_array_batch_buffers, 0, sizeof(const void*) * 3);
+    // Necessary dummy buffer
+    arrow_array_batch_buffers[1] = new int[1];
     auto arrow_array_batch = new ArrowArray({
         .length = static_cast<int64_t>(idxRowArrow),
         .n_buffers = 1,
@@ -4891,14 +4892,12 @@ SQLRETURN FetchArrowBatch_wrap(
             array->release = nullptr;
         },
     });
-    // Necessary dummy buffer
-    arrow_array_batch->buffers[1] = new int[1];
 
     for (SQLUSMALLINT col = 0; col < numCols; col++) {
         auto dataType = dataTypes[col];
         auto arrow_array_col_buffers = new const void* [3];
-        auto private_data = new ArrowArrayPrivateData();
         memset(arrow_array_col_buffers, 0, sizeof(const void*) * 3);
+        auto private_data = new ArrowArrayPrivateData();
         // Allocate new memory and copy the data
         switch (dataType) {
             case SQL_CHAR:
@@ -5000,7 +4999,7 @@ SQLRETURN FetchArrowBatch_wrap(
                 assert(array->release != nullptr);
                 assert(array->children == nullptr);
                 assert(array->n_children == 0);
-                delete array->private_data;
+                delete array->private_data; // Frees all buffer entries
                 assert(array->buffers != nullptr);
                 delete[] array->buffers;
                 array->release = nullptr;
