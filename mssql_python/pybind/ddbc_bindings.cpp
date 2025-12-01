@@ -192,6 +192,23 @@ struct ColumnBuffersArrow {
         var_data(numCols) {}
 };
 
+struct ArrowArrayPrivateData {
+    std::unique_ptr<uint8_t[]> buffer_uint8;
+    std::unique_ptr<int16_t[]> buffer_int16;
+    std::unique_ptr<int32_t[]> buffer_int32;
+    std::unique_ptr<int64_t[]> buffer_int64;
+    std::unique_ptr<double[]> buffer_float64;
+    std::unique_ptr<uint8_t[]> buffer_bit;
+    std::unique_ptr<uint32_t[]> buffer_var;
+    std::unique_ptr<int32_t[]> buffer_date;
+    std::unique_ptr<int64_t[]> buffer_ts_micro;
+    std::unique_ptr<int32_t[]> buffer_time_second;
+    std::unique_ptr<__int128_t[]> buffer_decimal;
+
+    std::unique_ptr<uint8_t[]> buffer_valid;
+    std::unique_ptr<uint8_t[]> buffer_var_data;
+};
+
 struct ArrowSchemaPrivateData {
     std::unique_ptr<char[]> name;
     std::unique_ptr<char[]> format;
@@ -234,7 +251,7 @@ struct ArrowArray {
   // Release callback
   void (*release)(struct ArrowArray*);
   // Opaque producer-specific data
-  void* private_data;
+  ArrowArrayPrivateData* private_data;
 };
 
 #endif  // ARROW_C_DATA_INTERFACE
@@ -4110,33 +4127,6 @@ SQLRETURN GetDataVar(SQLHSTMT hStmt,
     return SQL_SUCCESS;
 }
 
-void ArrowArray_release(struct ArrowArray* array) {
-    assert (array != nullptr);
-    assert (array->release != nullptr);
-    array->release = nullptr;
-
-    uint32_t buffers_freed = 0;
-    uint32_t current_buffer = 0;
-    while (buffers_freed < array->n_buffers) {
-        if (array->buffers[current_buffer]) {
-            free((void*)array->buffers[current_buffer]);
-            buffers_freed++;
-        }
-        current_buffer++;
-        assert (current_buffer <= 3);
-    }
-    delete[] array->buffers;
-
-    for (int i = 0; i < array->n_children; i++) {
-        assert (array->children != nullptr);
-        assert (array->children[i] != nullptr);
-        array->children[i]->release(array->children[i]);
-        delete array->children[i];
-    }
-    delete[] array->children;
-
-}
-
 int32_t dateAsDayCount(SQLUSMALLINT year, SQLUSMALLINT month, SQLUSMALLINT day) {
     // Convert SQL_DATE_STRUCT to Arrow Date32 (days since epoch)
     std::tm tm_date = {};
@@ -4877,6 +4867,7 @@ SQLRETURN FetchArrowBatch_wrap(
         .children = new ArrowArray* [numCols],
         .release = [](ArrowArray* array) {
             assert(array != nullptr);
+            assert(array->private_data == nullptr);
             assert(array->release != nullptr);
             assert(array->children != nullptr);
             assert(array->n_children > 0);
@@ -4905,6 +4896,7 @@ SQLRETURN FetchArrowBatch_wrap(
     for (SQLUSMALLINT col = 0; col < numCols; col++) {
         auto dataType = dataTypes[col];
         auto arrow_array_col_buffers = new const void* [3];
+        auto private_data = new ArrowArrayPrivateData();
         memset(arrow_array_col_buffers, 0, sizeof(const void*) * 3);
         // Allocate new memory and copy the data
         switch (dataType) {
@@ -4923,52 +4915,65 @@ SQLRETURN FetchArrowBatch_wrap(
                 // length of string at index i is the difference between values at i and i+1
                 // so total length is value at index idxRowArrow
                 auto data_buf_len_total = buffersArrow.var[col][idxRowArrow];
-                uint8_t* dataBuffer = new uint8_t[data_buf_len_total];
-                std::memcpy(dataBuffer, buffersArrow.var_data[col].data(), data_buf_len_total);
-                arrow_array_col_buffers[2] = dataBuffer;
-                arrow_array_col_buffers[1] = buffersArrow.var[col].release();
+                auto dataBuffer = std::make_unique<uint8_t[]>(data_buf_len_total);
+                std::memcpy(dataBuffer.get(), buffersArrow.var_data[col].data(), data_buf_len_total);
+                private_data->buffer_var_data = std::move(dataBuffer);
+                arrow_array_col_buffers[2] = private_data->buffer_var_data.get();
+                private_data->buffer_var = std::move(buffersArrow.var[col]);
+                arrow_array_col_buffers[1] = private_data->buffer_var.get();
             }
             break;
             case SQL_TINYINT:
-                arrow_array_col_buffers[1] = buffersArrow.uint8[col].release();
+                private_data->buffer_uint8 = std::move(buffersArrow.uint8[col]);
+                arrow_array_col_buffers[1] = private_data->buffer_uint8.get();
                 break;
             case SQL_SMALLINT:
-                arrow_array_col_buffers[1] = buffersArrow.int16[col].release();
+                private_data->buffer_int16 = std::move(buffersArrow.int16[col]);
+                arrow_array_col_buffers[1] = private_data->buffer_int16.get();
                 break;
             case SQL_INTEGER:
-                arrow_array_col_buffers[1] = buffersArrow.int32[col].release();
+                private_data->buffer_int32 = std::move(buffersArrow.int32[col]);
+                arrow_array_col_buffers[1] = private_data->buffer_int32.get();
                 break;
             case SQL_BIGINT:
-                arrow_array_col_buffers[1] = buffersArrow.int64[col].release();
+                private_data->buffer_int64 = std::move(buffersArrow.int64[col]);
+                arrow_array_col_buffers[1] = private_data->buffer_int64.get();
                 break;
             case SQL_REAL:
             case SQL_FLOAT:
             case SQL_DOUBLE:
-                arrow_array_col_buffers[1] = buffersArrow.float64[col].release();
+                private_data->buffer_float64 = std::move(buffersArrow.float64[col]);
+                arrow_array_col_buffers[1] = private_data->buffer_float64.get();
                 break;
             case SQL_DECIMAL:
             case SQL_NUMERIC: {
-                arrow_array_col_buffers[1] = buffersArrow.decimal[col].release();
+                private_data->buffer_decimal = std::move(buffersArrow.decimal[col]);
+                arrow_array_col_buffers[1] = private_data->buffer_decimal.get();
                 break;
             }
             case SQL_TIMESTAMP:
             case SQL_TYPE_TIMESTAMP:
             case SQL_DATETIME:
-                arrow_array_col_buffers[1] = buffersArrow.ts_micro[col].release();
+                private_data->buffer_ts_micro = std::move(buffersArrow.ts_micro[col]);
+                arrow_array_col_buffers[1] = private_data->buffer_ts_micro.get();
                 break;
             case SQL_SS_TIMESTAMPOFFSET:
-                arrow_array_col_buffers[1] = buffersArrow.ts_micro[col].release();
+                private_data->buffer_ts_micro = std::move(buffersArrow.ts_micro[col]);
+                arrow_array_col_buffers[1] = private_data->buffer_ts_micro.get();
                 break;
             case SQL_TYPE_DATE:
-                arrow_array_col_buffers[1] = buffersArrow.date[col].release();
+                private_data->buffer_date = std::move(buffersArrow.date[col]);
+                arrow_array_col_buffers[1] = private_data->buffer_date.get();
                 break;
             case SQL_TIME:
             case SQL_TYPE_TIME:
             case SQL_SS_TIME2:
-                arrow_array_col_buffers[1] = buffersArrow.time_second[col].release();
+                private_data->buffer_time_second = std::move(buffersArrow.time_second[col]);
+                arrow_array_col_buffers[1] = private_data->buffer_time_second.get();
                 break;
             case SQL_BIT:
-                arrow_array_col_buffers[1] = buffersArrow.bit[col].release();
+                private_data->buffer_bit = std::move(buffersArrow.bit[col]);
+                arrow_array_col_buffers[1] = private_data->buffer_bit.get();
                 break;
             default: {
                 std::ostringstream errorString;
@@ -4988,7 +4993,18 @@ SQLRETURN FetchArrowBatch_wrap(
             .n_children = 0,
             .buffers = arrow_array_col_buffers,
             .children = nullptr,
-            .release = ArrowArray_release,
+            .release = [](ArrowArray* array) {
+                assert(array != nullptr);
+                assert(array->private_data != nullptr);
+                assert(array->release != nullptr);
+                assert(array->children == nullptr);
+                assert(array->n_children == 0);
+                delete array->private_data;
+                assert(array->buffers != nullptr);
+                delete[] array->buffers;
+                array->release = nullptr;
+            },
+            .private_data = private_data,
         });
 
         arrow_array_col->buffers[0] = buffersArrow.valid[col].release();
