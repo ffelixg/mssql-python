@@ -192,6 +192,14 @@ struct ColumnBuffersArrow {
         var_data(numCols) {}
 };
 
+struct ArrowSchema;
+
+struct ArrowSchemaPrivateData {
+    std::string name;
+    std::string format;
+    std::unique_ptr<ArrowSchema*[]> children;
+};
+
 #ifndef ARROW_C_DATA_INTERFACE
 #define ARROW_C_DATA_INTERFACE
 
@@ -233,6 +241,16 @@ struct ArrowArray {
 };
 
 #endif  // ARROW_C_DATA_INTERFACE
+
+void ReleaseArrowSchema(struct ArrowSchema* schema) {
+    if (schema == nullptr || schema->release == nullptr) {
+        return;
+    }
+    auto* private_data = static_cast<ArrowSchemaPrivateData*>(schema->private_data);
+    delete private_data;
+    schema->release = nullptr;
+    schema->private_data = nullptr;
+}
 
 //-------------------------------------------------------------------------------------------------
 // Function pointer initialization
@@ -4105,22 +4123,6 @@ SQLRETURN GetDataVar(SQLHSTMT hStmt,
     return SQL_SUCCESS;
 }
 
-void ArrowSchema_release(struct ArrowSchema* schema) {
-    assert (schema != nullptr);
-    assert (schema->release != nullptr);
-    schema->release = nullptr;
-    delete[] schema->name;
-    for (int i = 0; i < schema->n_children; i++) {
-        assert (schema->children != nullptr);
-        if (schema->children[i]) {
-            schema->children[i]->release(schema->children[i]);
-            delete schema->children[i];
-        }
-    }
-    delete[] schema->children;
-    delete[] schema->format;
-}
-
 void ArrowArray_release(struct ArrowArray* array) {
     assert (array != nullptr);
     assert (array->release != nullptr);
@@ -4812,24 +4814,51 @@ SQLRETURN FetchArrowBatch_wrap(
 
     // Transfer ownership of buffers to Arrow structures
     // Exceptions beyond this point would cause memory leaks
-    auto batch_children = new ArrowSchema* [numCols];
+    
+    auto batch_children = new ArrowSchema*[numCols];
+
     for (SQLSMALLINT i = 0; i < numCols; i++) {
+        auto col_private_data = new ArrowSchemaPrivateData();
+        col_private_data->format = columnFormats[i].get();
+        col_private_data->name = columnNamesCStr[i].get();
+        
         auto arrow_schema = new ArrowSchema({
-            .format = columnFormats[i].release(),
-            .name = columnNamesCStr[i].release(),
-            .flags = columnNullable[i] ? 2 : 0, // ARROW_FLAG_NULLABLE
-            .release = ArrowSchema_release,
+            .format = col_private_data->format.c_str(),
+            .name = col_private_data->name.c_str(),
+            .metadata = nullptr,
+            .flags = static_cast<int64_t>(columnNullable[i] ? ARROW_FLAG_NULLABLE : 0),
+            .n_children = 0,
+            .children = nullptr,
+            .dictionary = nullptr,
+            .release = ReleaseArrowSchema,
+            .private_data = col_private_data,
         });
         batch_children[i] = arrow_schema;
     }
 
     auto arrow_schema_batch = new ArrowSchema({
-        .format = []{ char* f = new char[3]; std::strcpy(f, "+s"); return f; }(),
-        .name = []{ char* n = new char[1]; n[0] = '\0'; return n; }(),
+        .format = "+s",
+        .name = "",
+        .metadata = nullptr,
+        .flags = 0,
         .n_children = numCols,
         .children = batch_children,
-        .release = ArrowSchema_release,
+        .dictionary = nullptr,
+        .release = [](ArrowSchema* schema) {
+            for (int64_t i = 0; i < schema->n_children; ++i) {
+                if (schema->children[i]) {
+                    if (schema->children[i]->release) {
+                        schema->children[i]->release(schema->children[i]);
+                    }
+                    delete schema->children[i];
+                }
+            }
+            delete[] schema->children;
+            schema->release = nullptr;
+        },
+        .private_data = nullptr,
     });
+
     auto caps = py::capsule((void*)arrow_schema_batch, "arrow_schema", [](void* ptr) {
         auto arrow_schema = static_cast<ArrowSchema*>(ptr);
         if (arrow_schema->release) {
