@@ -4140,6 +4140,7 @@ int32_t dateAsDayCount(SQLUSMALLINT year, SQLUSMALLINT month, SQLUSMALLINT day) 
         ThrowStdException("Date conversion error");
     }
     // Calculate days since epoch
+    assert(time_since_epoch % 86400 == 0); // Ensure time is at midnight, no timezone issues
     return time_since_epoch / 86400;
 }
 
@@ -4198,7 +4199,7 @@ SQLRETURN FetchArrowBatch_wrap(
         columnNamesCStr[i] = std::make_unique<char[]>(nameLen);
         std::memcpy(columnNamesCStr[i].get(), columnName.c_str(), nameLen);
 
-        const char* format = nullptr;
+        std::string format = "";
         switch(dataType) {
             case SQL_CHAR:
             case SQL_VARCHAR:
@@ -4294,9 +4295,9 @@ SQLRETURN FetchArrowBatch_wrap(
         
         // Store format string if not already stored (for non-decimal types)
         if (!columnFormats[i]) {
-            size_t formatLen = std::strlen(format) + 1;
+            size_t formatLen = format.length() + 1;
             columnFormats[i] = std::make_unique<char[]>(formatLen);
-            std::memcpy(columnFormats[i].get(), format, formatLen);
+            std::memcpy(columnFormats[i].get(), format.c_str(), formatLen);
         }
 
         buffersArrow.valid[i] = std::make_unique<uint8_t[]>((arrowBatchSize + 7) / 8);
