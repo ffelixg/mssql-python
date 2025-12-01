@@ -192,12 +192,9 @@ struct ColumnBuffersArrow {
         var_data(numCols) {}
 };
 
-struct ArrowSchema;
-
 struct ArrowSchemaPrivateData {
     std::string name;
     std::string format;
-    std::unique_ptr<ArrowSchema*[]> children;
 };
 
 #ifndef ARROW_C_DATA_INTERFACE
@@ -243,13 +240,13 @@ struct ArrowArray {
 #endif  // ARROW_C_DATA_INTERFACE
 
 void ReleaseArrowSchema(struct ArrowSchema* schema) {
-    if (schema == nullptr || schema->release == nullptr) {
-        return;
-    }
+    assert(schema != nullptr);
+    assert(schema->release != nullptr);
+    assert(schema->private_data != nullptr);
+    assert(schema->children == nullptr && schema->n_children == 0);
     auto* private_data = static_cast<ArrowSchemaPrivateData*>(schema->private_data);
     delete private_data;
     schema->release = nullptr;
-    schema->private_data = nullptr;
 }
 
 //-------------------------------------------------------------------------------------------------
@@ -4845,6 +4842,11 @@ SQLRETURN FetchArrowBatch_wrap(
         .children = batch_children,
         .dictionary = nullptr,
         .release = [](ArrowSchema* schema) {
+            assert(schema != nullptr);
+            assert(schema->release != nullptr);
+            assert(schema->private_data == nullptr);
+            assert(schema->children != nullptr);
+            assert(schema->n_children > 0);
             for (int64_t i = 0; i < schema->n_children; ++i) {
                 if (schema->children[i]) {
                     if (schema->children[i]->release) {
