@@ -4875,7 +4875,29 @@ SQLRETURN FetchArrowBatch_wrap(
         .n_children = numCols,
         .buffers = arrow_array_batch_buffers,
         .children = new ArrowArray* [numCols],
-        .release = ArrowArray_release,
+        .release = [](ArrowArray* array) {
+            assert(array != nullptr);
+            assert(array->release != nullptr);
+            assert(array->children != nullptr);
+            assert(array->n_children > 0);
+            for (int64_t i = 0; i < array->n_children; ++i) {
+                if (array->children[i]) {
+                    if (array->children[i]->release) {
+                        array->children[i]->release(array->children[i]);
+                    }
+                    delete array->children[i];
+                }
+            }
+            delete[] array->children;
+            assert(array->buffers != nullptr);
+            assert(array->n_buffers = 1);
+            assert(array->buffers[0] == nullptr);
+            assert(array->buffers[1] != nullptr);
+            assert(array->buffers[2] == nullptr);
+            delete[] static_cast<const uint8_t*>(array->buffers[1]);
+            delete[] array->buffers;
+            array->release = nullptr;
+        },
     });
     // Necessary dummy buffer
     arrow_array_batch->buffers[1] = new int[1];
