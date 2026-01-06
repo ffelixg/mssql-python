@@ -4319,9 +4319,9 @@ int32_t days_from_civil(int y, int m, int d) {
 SQLRETURN FetchArrowBatch_wrap(
     SqlHandlePtr StatementHandle,
     py::list& capsules,
-    size_t arrowBatchSize
+    int arrowBatchSize
 ) {
-    size_t fetchSize = arrowBatchSize;
+    int fetchSize = arrowBatchSize;
     SQLRETURN ret;
     SQLHSTMT hStmt = StatementHandle->get();
     // Retrieve column count
