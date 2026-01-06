@@ -4477,7 +4477,6 @@ SQLRETURN FetchArrowBatch_wrap(
                 arrowColumnProducer->ptrValueBuffer = arrowColumnProducer->bitVal.get();
                 break;
             default:
-                std::wstring columnName = colMeta["ColumnName"].cast<std::wstring>();
                 std::ostringstream errorString;
                 errorString << "Unsupported data type for Arrow batch fetch for column - " << columnName.c_str()
                             << ", Type - " << dataType << ", column ID - " << (i + 1);
