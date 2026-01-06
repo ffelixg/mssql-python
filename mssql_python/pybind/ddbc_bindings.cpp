@@ -4887,7 +4887,7 @@ SQLRETURN FetchArrowBatch_wrap(
                         while (target_vec->size() < start + dataLenConverted) {
                             target_vec->resize(target_vec->size() * 2);
                         }
-                        WideCharToMultiByte(CP_UTF8, 0, wcharSource, dataLenW, &(*target_vec)[start], dataLenConverted, NULL, NULL);
+                        WideCharToMultiByte(CP_UTF8, 0, wcharSource, dataLenW, reinterpret_cast<char*>(&(*target_vec)[start]), dataLenConverted, NULL, NULL);
                         arrowColumnProducer->varVal[idxRowArrow + 1] = start + dataLenConverted;
 #else
                         // On Unix, use the SQLWCHARToWString utility and then convert to UTF-8
@@ -5066,14 +5066,14 @@ SQLRETURN FetchArrowBatch_wrap(
     
     for (SQLSMALLINT i = 0; i < numCols; i++) {
         *arrowSchemaBatchChildPointers[i] = {
-            .format = arrowSchemaPrivateData[i]->format.get(),
-            .name = arrowSchemaPrivateData[i]->name.get(),
-            .metadata = nullptr,
-            .flags = static_cast<int64_t>(columnNullable[i] ? ARROW_FLAG_NULLABLE : 0),
-            .n_children = 0,
-            .children = nullptr,
-            .dictionary = nullptr,
-            .release = [](ArrowSchema* schema) {
+            arrowSchemaPrivateData[i]->format.get(),
+            arrowSchemaPrivateData[i]->name.get(),
+            nullptr,
+            static_cast<int64_t>(columnNullable[i] ? ARROW_FLAG_NULLABLE : 0),
+            0,
+            nullptr,
+            nullptr,
+            [](ArrowSchema* schema) {
                 assert(schema != nullptr);
                 assert(schema->release != nullptr);
                 assert(schema->private_data != nullptr);
@@ -5081,7 +5081,7 @@ SQLRETURN FetchArrowBatch_wrap(
                 delete schema->private_data; // Frees format and name
                 schema->release = nullptr;
             },
-            .private_data = arrowSchemaPrivateData[i].release(),
+            arrowSchemaPrivateData[i].release(),
         };
     }
 
@@ -5089,15 +5089,15 @@ SQLRETURN FetchArrowBatch_wrap(
         arrowSchemaBatchChildren[i] = arrowSchemaBatchChildPointers[i].release();
     }
 
-    *arrowSchemaBatch = ArrowSchema{
-        .format = "+s",
-        .name = "",
-        .metadata = nullptr,
-        .flags = 0,
-        .n_children = numCols,
-        .children = arrowSchemaBatchChildren.release(),
-        .dictionary = nullptr,
-        .release = [](ArrowSchema* schema) {
+    *arrowSchemaBatch = {
+        "+s",
+        "",
+        nullptr,
+        0,
+        numCols,
+        arrowSchemaBatchChildren.release(),
+        nullptr,
+        [](ArrowSchema* schema) {
             // format and name are string literals, no need to free
             assert(schema != nullptr);
             assert(schema->release != nullptr);
@@ -5115,7 +5115,7 @@ SQLRETURN FetchArrowBatch_wrap(
             delete[] schema->children;
             schema->release = nullptr;
         },
-        .private_data = nullptr,
+        nullptr,
     };
 
     // Finally, transfer ownership of arrowSchemaBatch and its pointer to pycapsule
@@ -5158,14 +5158,15 @@ SQLRETURN FetchArrowBatch_wrap(
         arrowArrayPrivateData[col]->buffers[2] = arrowArrayPrivateData[col]->varData.data();
 
         *arrowArrayBatchChildPointers[col] = {
-            .length = static_cast<int64_t>(idxRowArrow),
-            .null_count = nullCounts[col],
-            .offset = 0,
-            .n_buffers = columnVarLen[col] ? 3 : 2,
-            .n_children = 0,
-            .buffers = (const void**)arrowArrayPrivateData[col]->buffers.data(),
-            .children = nullptr,
-            .release = [](ArrowArray* array) {
+            static_cast<int64_t>(idxRowArrow),
+            nullCounts[col],
+            0,
+            columnVarLen[col] ? 3 : 2,
+            0,
+            (const void**)arrowArrayPrivateData[col]->buffers.data(),
+            nullptr,
+            nullptr,
+            [](ArrowArray* array) {
                 assert(array != nullptr);
                 assert(array->private_data != nullptr);
                 assert(array->release != nullptr);
@@ -5175,7 +5176,7 @@ SQLRETURN FetchArrowBatch_wrap(
                 assert(array->buffers != nullptr);
                 array->release = nullptr;
             },
-            .private_data = arrowArrayPrivateData[col].release(),
+            arrowArrayPrivateData[col].release(),
         };
     }
 
@@ -5183,13 +5184,16 @@ SQLRETURN FetchArrowBatch_wrap(
         arrowArrayBatchChildren[i] = arrowArrayBatchChildPointers[i].release();
     }
 
-    *arrowArrayBatch = ArrowArray{
-        .length = static_cast<int64_t>(idxRowArrow),
-        .n_buffers = 1,
-        .n_children = numCols,
-        .buffers = arrowArrayBatchBuffers.release(),
-        .children = arrowArrayBatchChildren.release(),
-        .release = [](ArrowArray* array) {
+    *arrowArrayBatch = {
+        static_cast<int64_t>(idxRowArrow),
+        0,
+        0,
+        1,
+        numCols,
+        arrowArrayBatchBuffers.release(),
+        arrowArrayBatchChildren.release(),
+        nullptr,
+        [](ArrowArray* array) {
             assert(array != nullptr);
             assert(array->private_data == nullptr);
             assert(array->release != nullptr);
@@ -5210,6 +5214,7 @@ SQLRETURN FetchArrowBatch_wrap(
             delete[] array->buffers;
             array->release = nullptr;
         },
+        nullptr,
     };
 
     // Finally, transfer ownership of arrowArrayBatch and its pointer to pycapsule
