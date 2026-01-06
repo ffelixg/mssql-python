@@ -4805,9 +4805,9 @@ SQLRETURN FetchArrowBatch_wrap(
                     }
                 }
 
-                SQLLEN dataLen = buffers.indicators[idxCol][idxRowSql];
+                SQLLEN indicator = buffers.indicators[idxCol][idxRowSql];
 
-                if (dataLen == SQL_NULL_DATA) {
+                if (indicator == SQL_NULL_DATA) {
                     // Mark as null in validity bitmap
                     size_t bytePos = idxRowArrow / 8;
                     size_t bitPos = idxRowArrow % 8;
@@ -4836,11 +4836,12 @@ SQLRETURN FetchArrowBatch_wrap(
 
                     nullCounts[idxCol] += 1;
                     continue;
-                } else if (dataLen < 0) {
+                } else if (indicator < 0) {
                     // Negative value is unexpected, log column index, SQL type & raise exception
-                    LOG("Unexpected negative data length. Column ID - {}, SQL Type - {}, Data Length - {}", idxCol + 1, dataType, dataLen);
+                    LOG("Unexpected negative data length. Column ID - {}, SQL Type - {}, Data Length - {}", idxCol + 1, dataType, indicator);
                     ThrowStdException("Unexpected negative data length.");
                 }
+                auto dataLen = static_cast<uint32_t>(indicator);
 
                 switch (dataType) {
                     case SQL_BINARY:
