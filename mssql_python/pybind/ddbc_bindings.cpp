@@ -5152,7 +5152,6 @@ SQLRETURN FetchArrowBatch_wrap(
     // No unhandled exceptions until the pycapsule owns the arrowArrayBatch to avoid memory leaks
 
     for (SQLUSMALLINT col = 0; col < numCols; col++) {
-        auto dataType = dataTypes[col];
         arrowArrayPrivateData[col]->buffers[0] = arrowArrayPrivateData[col]->valid.get();
         arrowArrayPrivateData[col]->buffers[1] = arrowArrayPrivateData[col]->ptrValueBuffer;
         arrowArrayPrivateData[col]->buffers[2] = arrowArrayPrivateData[col]->varData.data();
