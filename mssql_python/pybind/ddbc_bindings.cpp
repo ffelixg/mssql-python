@@ -4883,11 +4883,11 @@ SQLRETURN FetchArrowBatch_wrap(
                         auto target_vec = &arrowColumnProducer->varData;
 #if defined(_WIN32)
                         // Convert wide string
-                        int dataLenConverted = WideCharToMultiByte(CP_UTF8, 0, wcharSource, dataLenW, NULL, 0, NULL, NULL);
+                        int dataLenConverted = WideCharToMultiByte(CP_UTF8, 0, wcharSource, static_cast<int>(dataLenW), NULL, 0, NULL, NULL);
                         while (target_vec->size() < start + dataLenConverted) {
                             target_vec->resize(target_vec->size() * 2);
                         }
-                        WideCharToMultiByte(CP_UTF8, 0, wcharSource, dataLenW, reinterpret_cast<char*>(&(*target_vec)[start]), dataLenConverted, NULL, NULL);
+                        WideCharToMultiByte(CP_UTF8, 0, wcharSource, static_cast<int>(dataLenW), reinterpret_cast<char*>(&(*target_vec)[start]), dataLenConverted, NULL, NULL);
                         arrowColumnProducer->varVal[idxRowArrow + 1] = start + dataLenConverted;
 #else
                         // On Unix, use the SQLWCHARToWString utility and then convert to UTF-8
