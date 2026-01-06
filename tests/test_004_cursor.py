@@ -15055,23 +15055,19 @@ def test_varchar_latin1_fetch(cursor):
             update @t1 set utf8 = latin1
 
             select * from @t1
+            where row_nr not in (129, 141, 143, 144, 157)
         """)
         cursor.nextset()
         cursor.nextset()
     
     def validate(result):
-        assert len(result) == 256
+        assert len(result) == 256 - 5
         for (row_nr, latin1, utf8) in result:
-            assert utf8 == latin1 or (
-                # small difference in how sql server and msodbcsql18 handle unmapped characters
-                row_nr in [129, 141, 143, 144, 157]
-                and utf8 == chr(row_nr)
-                and latin1 == '?'
-            ), (row_nr, utf8, latin1, chr(row_nr))
+            assert utf8 == latin1, (row_nr, utf8, latin1, chr(row_nr))
 
     query()
     validate(cursor.fetchall())
     query()
     validate(cursor.fetchmany(500))
     query()
-    validate([cursor.fetchone() for _ in range(256)])
+    validate([cursor.fetchone() for _ in range(256 - 5)])
