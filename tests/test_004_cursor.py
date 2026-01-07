@@ -15021,6 +15021,7 @@ def test_close(db_connection):
 
 
 def test_varchar_buffersize_special_character(cursor):
+    cursor.connection.setdecoding(mssql_python.SQL_CHAR, encoding="cp1252", ctype=mssql_python.SQL_CHAR)
     cursor.execute(
         "drop table if exists #t1;\n"
         + "create table #t1 (a varchar(2) collate SQL_Latin1_General_CP1_CI_AS)\n"
@@ -15034,6 +15035,9 @@ def test_varchar_buffersize_special_character(cursor):
 
 
 def test_varchar_latin1_fetch(cursor):
+    # import platform
+    # if platform.system() == 'Windows':
+    cursor.connection.setdecoding(mssql_python.SQL_CHAR, encoding="cp1252", ctype=mssql_python.SQL_CHAR)
     def query():
         cursor.execute("""
             declare @t1 as table(
