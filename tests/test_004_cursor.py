@@ -15106,3 +15106,18 @@ def test_impossible_query2(cursor):
     cursor.nextset()
     ret = cursor.fetchone()
     assert tuple(ret) == ('ß', 'ß', b'\xc3\x9f', b'\xdf'), ret
+
+
+def test_impossible_query3(cursor):
+    cursor.connection.setdecoding(mssql_python.SQL_CHAR)
+    cursor.execute("""
+        declare @t1 as table(
+            a nvarchar(20),
+            b varchar(20) collate Latin1_General_100_CI_AI_SC_UTF8
+        )
+        insert into @t1 values (N'😄', N'😄')
+        select a, b, cast(a as varbinary(100)), cast(b as varbinary(100)) from @t1
+    """)
+    cursor.nextset()
+    ret = cursor.fetchone()
+    assert tuple(ret)[:2] == ('😄', '😄'), ret
