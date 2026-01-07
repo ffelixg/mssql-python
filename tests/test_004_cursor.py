@@ -15079,14 +15079,13 @@ def test_varchar_latin1_fetch(cursor):
 
 def test_impossible_query(cursor):
     cursor.execute("""
-        drop table if exists t1
-        create table t1 (
+        declare @t1 as table(
             a varchar(2) collate Latin1_General_100_CI_AI_SC_UTF8,
             /* N'ß' would also fit into varchar(1), but then the buffer size bug would trigger */
             b varchar(2) collate SQL_Latin1_General_CP1_CI_AS
         )
-        insert into t1 values (N'ß', N'ß')
-        select a, b, cast(a as varbinary(100)), cast(b as varbinary(100)) from t1
+        insert into @t1 values (N'ß', N'ß')
+        select a, b, cast(a as varbinary(100)), cast(b as varbinary(100)) from @t1
     """)
     cursor.nextset()
     ret = cursor.fetchone()
@@ -15096,14 +15095,13 @@ def test_impossible_query(cursor):
 def test_impossible_query2(cursor):
     cursor.connection.setdecoding(mssql_python.SQL_CHAR, encoding="cp1252", ctype=mssql_python.SQL_CHAR)
     cursor.execute("""
-        drop table if exists t1
-        create table t1 (
+        declare @t1 as table(
             a varchar(2) collate Latin1_General_100_CI_AI_SC_UTF8,
             /* N'ß' would also fit into varchar(1), but then the buffer size bug would trigger */
             b varchar(2) collate SQL_Latin1_General_CP1_CI_AS
         )
-        insert into t1 values (N'ß', N'ß')
-        select a, b, cast(a as varbinary(100)), cast(b as varbinary(100)) from t1
+        insert into @t1 values (N'ß', N'ß')
+        select a, b, cast(a as varbinary(100)), cast(b as varbinary(100)) from @t1
     """)
     cursor.nextset()
     ret = cursor.fetchone()
