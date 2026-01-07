@@ -15021,15 +15021,15 @@ def test_close(db_connection):
 
 
 def test_varchar_buffersize_special_character(cursor):
-    cursor.connection.setdecoding(mssql_python.SQL_CHAR, encoding="cp1252", ctype=mssql_python.SQL_CHAR)
+    cursor.connection.setdecoding(mssql_python.SQL_CHAR, encoding="cp1252")
     cursor.execute(
         "drop table if exists #t1;\n"
         + "create table #t1 (a varchar(2) collate SQL_Latin1_General_CP1_CI_AS)\n"
         + "insert into #t1 values (N'ßl')\n"
     )
-    assert cursor.execute("select * from #t1").fetchall()[0][0] == "ßl"
-    assert cursor.execute("select * from #t1").fetchmany(1)[0][0] == "ßl"
     assert cursor.execute("select * from #t1").fetchone()[0] == "ßl"
+    assert cursor.execute("select * from #t1").fetchmany(1)[0][0] == "ßl"
+    assert cursor.execute("select * from #t1").fetchall()[0][0] == "ßl"
     assert cursor.execute("select LEFT(a, 1) from #t1").fetchone()[0] == "ß"
     assert cursor.execute("select cast(a as varchar(3)) from #t1").fetchone()[0] == "ßl"
 
