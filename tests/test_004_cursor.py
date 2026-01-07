@@ -15089,7 +15089,7 @@ def test_impossible_query(cursor):
         select a, b, cast(a as varbinary(100)), cast(b as varbinary(100)) from t1
     """)
     cursor.nextset()
-    (ret,) = cursor.fetchall()
+    ret = cursor.fetchone()
     assert tuple(ret) == ('ß', 'ß', b'\xc3\x9f', b'\xdf'), ret
 
 
@@ -15106,5 +15106,5 @@ def test_impossible_query2(cursor):
         select a, b, cast(a as varbinary(100)), cast(b as varbinary(100)) from t1
     """)
     cursor.nextset()
-    (ret,) = cursor.fetchall()
+    ret = cursor.fetchone()
     assert tuple(ret) == ('ß', 'ß', b'\xc3\x9f', b'\xdf'), ret
