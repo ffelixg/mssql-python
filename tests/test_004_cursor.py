@@ -15026,12 +15026,32 @@ def test_varchar_buffersize_special_character(cursor):
         + "create table #t1 (a varchar(2) collate SQL_Latin1_General_CP1_CI_AS)\n"
         + "insert into #t1 values (N'ßl')\n"
     )
-    assert cursor.execute("select * from #t1").fetchall()[0][0] == "ßl"
-    assert cursor.execute("select * from #t1").fetchmany(1)[0][0] == "ßl"
-    assert cursor.execute("select * from #t1").fetchone()[0] == "ßl"
-    assert cursor.execute("select LEFT(a, 1) from #t1").fetchone()[0] == "ß"
-    assert cursor.execute("select cast(a as varchar(3)) from #t1").fetchone()[0] == "ßl"
+    import platform
 
+    if platform.system() != 'Windows':
+        # works fine with default settings
+        cursor.connection.setdecoding(mssql_python.SQL_CHAR)
+        assert cursor.execute("select * from #t1").fetchone()[0] == "ßl"
+        assert cursor.execute("select LEFT(a, 1) from #t1").fetchone()[0] == "ß"
+        assert cursor.execute("select cast(a as varchar(3)) from #t1").fetchone()[0] == "ßl"
+        assert cursor.execute("select * from #t1").fetchmany(1)[0][0] == "ßl"
+        assert cursor.execute("select * from #t1").fetchall()[0][0] == "ßl"
+    else:
+        cursor.connection.setdecoding(mssql_python.SQL_CHAR)
+        # fetchone respects setdecoding
+        with pytest.raises(UnicodeDecodeError, match="utf-8 codec can't decode.*"):
+            cursor.execute("select * from #t1").fetchone()
+        cursor.connection.setdecoding(mssql_python.SQL_CHAR, 'cp1252')
+        assert cursor.execute("select * from #t1").fetchone()[0] == "ßl"
+        assert cursor.execute("select LEFT(a, 1) from #t1").fetchone()[0] == "ß"
+        assert cursor.execute("select cast(a as varchar(3)) from #t1").fetchone()[0] == "ßl"
+
+        # fetchmany/fetchall do not respect setdecoding
+        with pytest.raises(UnicodeDecodeError, match="utf-8 codec can't decode.*"):
+            cursor.execute("select * from #t1").fetchmany(1)
+        with pytest.raises(UnicodeDecodeError, match="utf-8 codec can't decode.*"):
+            cursor.execute("select * from #t1").fetchall()
+        1/0
 
 def test_varchar_latin1_fetch(cursor):
     def query():
@@ -15069,7 +15089,16 @@ def test_varchar_latin1_fetch(cursor):
                 and latin1 == '?'
             ), (row_nr, utf8, latin1, chr(row_nr))
 
+    import platform
+    is_win = platform.system() == 'Windows'
+
+    cursor.connection.setdecoding(
+        mssql_python.SQL_CHAR,
+        'cp1252' if is_win else 'utf-8',
+        mssql_python.SQL_CHAR,
+    )
     query()
+
     validate(cursor.fetchall())
     query()
     validate(cursor.fetchmany(500))
