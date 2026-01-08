@@ -15028,7 +15028,7 @@ def test_varchar_buffersize_special_character(cursor):
     )
     import platform
 
-    if platform.system() != 'Windows':
+    if platform.system() != "Windows":
         # works fine with default settings
         cursor.connection.setdecoding(mssql_python.SQL_CHAR)
         assert cursor.execute("select * from #t1").fetchone()[0] == "ßl"
@@ -15040,7 +15040,7 @@ def test_varchar_buffersize_special_character(cursor):
         # fetchone respects setdecoding
         cursor.connection.setdecoding(mssql_python.SQL_CHAR)
         assert cursor.execute("select * from #t1").fetchone()[0] == b"\xdfl"
-        cursor.connection.setdecoding(mssql_python.SQL_CHAR, 'cp1252')
+        cursor.connection.setdecoding(mssql_python.SQL_CHAR, "cp1252")
         assert cursor.execute("select * from #t1").fetchone()[0] == "ßl"
         assert cursor.execute("select LEFT(a, 1) from #t1").fetchone()[0] == "ß"
         assert cursor.execute("select cast(a as varchar(3)) from #t1").fetchone()[0] == "ßl"
@@ -15054,7 +15054,8 @@ def test_varchar_buffersize_special_character(cursor):
 
 def test_varchar_latin1_fetch(cursor):
     def query():
-        cursor.execute("""
+        cursor.execute(
+            """
             set nocount on
             declare @t1 as table(
                 row_nr int,
@@ -15075,21 +15076,22 @@ def test_varchar_latin1_fetch(cursor):
             update @t1 set utf8 = latin1
 
             select * from @t1
-        """)
+        """
+        )
 
     def validate(result):
         assert len(result) == 256
-        for (row_nr, latin1, utf8) in result:
+        for row_nr, latin1, utf8 in result:
             assert utf8 == latin1 or (
                 # small difference in how sql server and msodbcsql18 handle unmapped characters
                 row_nr in [129, 141, 143, 144, 157]
                 and utf8 == chr(row_nr)
-                and latin1 == '?'
+                and latin1 == "?"
             ), (row_nr, utf8, latin1, chr(row_nr))
 
     import platform
 
-    if platform.system() != 'Windows':
+    if platform.system() != "Windows":
         # works fine with defaults
         cursor.connection.setdecoding(mssql_python.SQL_CHAR)
         query()
@@ -15100,7 +15102,7 @@ def test_varchar_latin1_fetch(cursor):
         validate(cursor.fetchmany(500))
     else:
         # works fine if correctly configured by user for fetchone (SQLGetData)
-        cursor.connection.setdecoding(mssql_python.SQL_CHAR, 'cp1252')
+        cursor.connection.setdecoding(mssql_python.SQL_CHAR, "cp1252")
         query()
         validate([cursor.fetchone() for _ in range(256)])
         # broken for SQLBindCol
@@ -15114,7 +15116,8 @@ def test_varchar_latin1_fetch(cursor):
 
 def test_varchar_emoji(cursor):
     cursor.connection.setdecoding(mssql_python.SQL_CHAR)  # default
-    cursor.execute("""
+    cursor.execute(
+        """
         set nocount on
         declare @t1 as table(
             a nvarchar(20),
@@ -15122,13 +15125,15 @@ def test_varchar_emoji(cursor):
         )
         insert into @t1 values (N'😄', N'😄')
         select a, b from @t1
-    """)
+    """
+    )
     ret = cursor.fetchone()
 
     import platform
-    if platform.system() == 'Windows':
+
+    if platform.system() == "Windows":
         # impossible to fetch varchar emojis on windows currently
-        assert tuple(ret) == ('😄', '??')
+        assert tuple(ret) == ("😄", "??")
     else:
         # works fine on other platforms
-        assert tuple(ret) == ('😄', '😄')
+        assert tuple(ret) == ("😄", "😄")
