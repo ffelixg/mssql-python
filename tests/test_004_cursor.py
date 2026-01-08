@@ -15051,9 +15051,11 @@ def test_varchar_buffersize_special_character(cursor):
         with pytest.raises(SystemError, match=".*returned a result with an exception set"):
             cursor.execute("select * from #t1").fetchall()
 
+
 def test_varchar_latin1_fetch(cursor):
     def query():
         cursor.execute("""
+            set nocount on
             declare @t1 as table(
                 row_nr int,
                 latin1 varchar(1) collate SQL_Latin1_General_CP1_CI_AS,
@@ -15074,9 +15076,7 @@ def test_varchar_latin1_fetch(cursor):
 
             select * from @t1
         """)
-        cursor.nextset()
-        cursor.nextset()
-    
+
     def validate(result):
         assert len(result) == 256
         for (row_nr, latin1, utf8) in result:
@@ -15110,3 +15110,25 @@ def test_varchar_latin1_fetch(cursor):
         query()
         with pytest.raises(SystemError, match=".*returned a result with an exception set"):
             cursor.fetchmany(500)
+
+
+def test_varchar_emoji(cursor):
+    cursor.connection.setdecoding(mssql_python.SQL_CHAR)  # default
+    cursor.execute("""
+        set nocount on
+        declare @t1 as table(
+            a nvarchar(20),
+            b varchar(20) collate Latin1_General_100_CI_AI_SC_UTF8
+        )
+        insert into @t1 values (N'😄', N'😄')
+        select a, b from @t1
+    """)
+    ret = cursor.fetchone()
+
+    import platform
+    if platform.system() == 'Windows':
+        # impossible to fetch varchar emojis on windows currently
+        assert tuple(ret) == ('??', '😄')
+    else:
+        # works fine on other platforms
+        assert tuple(ret) == ('😄', '😄')
