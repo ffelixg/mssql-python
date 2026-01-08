@@ -15039,7 +15039,7 @@ def test_varchar_buffersize_special_character(cursor):
     else:
         cursor.connection.setdecoding(mssql_python.SQL_CHAR)
         # fetchone respects setdecoding
-        with pytest.raises(UnicodeDecodeError, match="utf-8 codec can't decode.*"):
+        with pytest.raises(UnicodeDecodeError, match="'utf-8' codec can't decode.*"):
             cursor.execute("select * from #t1").fetchone()
         cursor.connection.setdecoding(mssql_python.SQL_CHAR, 'cp1252')
         assert cursor.execute("select * from #t1").fetchone()[0] == "ßl"
@@ -15047,9 +15047,9 @@ def test_varchar_buffersize_special_character(cursor):
         assert cursor.execute("select cast(a as varchar(3)) from #t1").fetchone()[0] == "ßl"
 
         # fetchmany/fetchall do not respect setdecoding
-        with pytest.raises(UnicodeDecodeError, match="utf-8 codec can't decode.*"):
+        with pytest.raises(UnicodeDecodeError, match="'utf-8' codec can't decode.*"):
             cursor.execute("select * from #t1").fetchmany(1)
-        with pytest.raises(UnicodeDecodeError, match="utf-8 codec can't decode.*"):
+        with pytest.raises(UnicodeDecodeError, match="'utf-8' codec can't decode.*"):
             cursor.execute("select * from #t1").fetchall()
         1/0
 
