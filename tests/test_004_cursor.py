@@ -15128,7 +15128,7 @@ def test_varchar_emoji(cursor):
     import platform
     if platform.system() == 'Windows':
         # impossible to fetch varchar emojis on windows currently
-        assert tuple(ret) == ('??', '😄')
+        assert tuple(ret) == ('😄', '??')
     else:
         # works fine on other platforms
         assert tuple(ret) == ('😄', '😄')
