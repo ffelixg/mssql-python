@@ -15110,3 +15110,5 @@ def test_varchar_latin1_fetch(cursor):
         query()
         with pytest.raises(SystemError, match=".*returned a result with an exception set"):
             cursor.fetchmany(500)
+        1/0
+    
