@@ -15046,10 +15046,14 @@ def test_varchar_buffersize_special_character(cursor):
         assert cursor.execute("select cast(a as varchar(3)) from #t1").fetchone()[0] == "ßl"
 
         # fetchmany/fetchall do not respect setdecoding
-        with pytest.raises(UnicodeDecodeError, match="'utf-8' codec can't decode.*"):
+        with pytest.raises(SystemError, match=".*returned a result with an exception set") as exc:
             cursor.execute("select * from #t1").fetchmany(1)
-        with pytest.raises(UnicodeDecodeError, match="'utf-8' codec can't decode.*"):
+        assert hasattr(exc, '__cause__')
+        assert isinstance(exc.__cause__, UnicodeDecodeError)
+        with pytest.raises(SystemError, match=".*returned a result with an exception set") as exc:
             cursor.execute("select * from #t1").fetchall()
+        assert hasattr(exc, '__cause__')
+        assert isinstance(exc.__cause__, UnicodeDecodeError)
         1/0
 
 def test_varchar_latin1_fetch(cursor):
@@ -15103,3 +15107,17 @@ def test_varchar_latin1_fetch(cursor):
     validate(cursor.fetchmany(500))
     query()
     validate([cursor.fetchone() for _ in range(256)])
+
+
+def test_pytestest():
+    with pytest.raises(NameError) as exc_info:
+        try:
+            # raise ValueError("a")
+            1/0
+        except Exception as e:
+            raise NameError("This is a test exception") from e
+            # raise NameError("This is a test exception")
+
+    err = exc_info.value
+    assert hasattr(err, '__cause__')
+    assert isinstance(err.__cause__, ZeroDivisionError)
