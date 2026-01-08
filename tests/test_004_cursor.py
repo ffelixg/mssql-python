@@ -15037,11 +15037,9 @@ def test_varchar_buffersize_special_character(cursor):
         assert cursor.execute("select * from #t1").fetchmany(1)[0][0] == "ßl"
         assert cursor.execute("select * from #t1").fetchall()[0][0] == "ßl"
     else:
-        cursor.connection.setdecoding(mssql_python.SQL_CHAR)
         # fetchone respects setdecoding
-        assert cursor.execute("select * from #t1").fetchone()[0] == "ßl"
-        with pytest.raises(UnicodeDecodeError, match="'utf-8' codec can't decode.*"):
-            cursor.execute("select * from #t1").fetchone()
+        cursor.connection.setdecoding(mssql_python.SQL_CHAR)
+        assert cursor.execute("select * from #t1").fetchone()[0] == b"\xdfl"
         cursor.connection.setdecoding(mssql_python.SQL_CHAR, 'cp1252')
         assert cursor.execute("select * from #t1").fetchone()[0] == "ßl"
         assert cursor.execute("select LEFT(a, 1) from #t1").fetchone()[0] == "ß"
