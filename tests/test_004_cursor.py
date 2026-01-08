@@ -15121,3 +15121,24 @@ def test_impossible_query3(cursor):
     cursor.nextset()
     ret = cursor.fetchone()
     assert tuple(ret)[:2] == ('😄', '😄'), ret
+
+
+def test_varchar_setdecoding(cursor):
+    # cursor.connection.setdecoding(mssql_python.SQL_CHAR, encoding="latin1", ctype=mssql_python.SQL_CHAR)
+    query = """
+        set nocount on
+        declare @t1 as table(
+            a varchar(4) collate Latin1_General_100_CI_AI_SC_UTF8
+        )
+        insert into @t1 values (N'ß')
+        select a from @t1
+    """
+    cursor.connection.setdecoding(mssql_python.SQL_CHAR, encoding="cp1252", ctype=mssql_python.SQL_CHAR)
+    assert cursor.execute(query).fetchone()[0] == 'ÃŸ'
+    cursor.connection.setdecoding(mssql_python.SQL_CHAR, encoding="utf-8", ctype=mssql_python.SQL_CHAR)
+    assert cursor.execute(query).fetchone()[0] == 'ß'
+
+    cursor.connection.setdecoding(mssql_python.SQL_CHAR, encoding="cp1252", ctype=mssql_python.SQL_CHAR)
+    assert cursor.execute(query).fetchmany(1)[0][0] == 'ß'
+    cursor.connection.setdecoding(mssql_python.SQL_CHAR, encoding="utf-8", ctype=mssql_python.SQL_CHAR)
+    assert cursor.execute(query).fetchmany(1)[0][0] == 'ß'

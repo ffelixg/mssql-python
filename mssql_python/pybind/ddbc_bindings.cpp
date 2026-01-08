@@ -3597,7 +3597,8 @@ SQLRETURN SQLBindColums(SQLHSTMT hStmt, ColumnBuffers& buffers, py::list& column
 // Fetch rows in batches
 // TODO: Move to anonymous namespace, since it is not used outside this file
 SQLRETURN FetchBatchData(SQLHSTMT hStmt, ColumnBuffers& buffers, py::list& columnNames,
-                         py::list& rows, SQLUSMALLINT numCols, SQLULEN& numRowsFetched) {
+                         py::list& rows, SQLUSMALLINT numCols, SQLULEN& numRowsFetched,
+                         const std::string& charEncoding, const std::string& wcharEncoding) {
     LOG("FetchBatchData: Fetching data in batches");
     SQLRETURN ret = SQLFetchScroll_ptr(hStmt, SQL_FETCH_NEXT, 0);
     if (ret == SQL_NO_DATA) {
@@ -4094,7 +4095,7 @@ SQLRETURN FetchMany_wrap(SqlHandlePtr StatementHandle, py::list& rows, int fetch
     SQLSetStmtAttr_ptr(hStmt, SQL_ATTR_ROW_ARRAY_SIZE, (SQLPOINTER)(intptr_t)fetchSize, 0);
     SQLSetStmtAttr_ptr(hStmt, SQL_ATTR_ROWS_FETCHED_PTR, &numRowsFetched, 0);
 
-    ret = FetchBatchData(hStmt, buffers, columnNames, rows, numCols, numRowsFetched);
+    ret = FetchBatchData(hStmt, buffers, columnNames, rows, numCols, numRowsFetched, charEncoding, wcharEncoding);
     if (!SQL_SUCCEEDED(ret) && ret != SQL_NO_DATA) {
         LOG("FetchMany_wrap: Error when fetching data - SQLRETURN=%d", ret);
         return ret;
@@ -4227,7 +4228,7 @@ SQLRETURN FetchAll_wrap(SqlHandlePtr StatementHandle, py::list& rows,
 
     while (ret != SQL_NO_DATA) {
         ret =
-            FetchBatchData(hStmt, buffers, columnNames, rows, numCols, numRowsFetched);
+            FetchBatchData(hStmt, buffers, columnNames, rows, numCols, numRowsFetched, charEncoding, wcharEncoding);
         if (!SQL_SUCCEEDED(ret) && ret != SQL_NO_DATA) {
             LOG("FetchAll_wrap: Error when fetching data - SQLRETURN=%d", ret);
             return ret;
