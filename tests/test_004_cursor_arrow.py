@@ -403,6 +403,54 @@ def test_rownumber_interleaved_fetchone_arrow_batch(cursor: mssql_python.Cursor)
     assert cursor.rownumber == 19
 
 
+def test_arrow_sql_ss_udt_hierarchyid_fetch(cursor: mssql_python.Cursor):
+    """A single SQL_SS_UDT fetch should work in both SQLBindCol and SQLGetData Arrow paths."""
+    for force_sqlgetdata in (False, True):
+        select_sql = (
+            """
+            SELECT filler, node
+            FROM (
+                VALUES
+                    (1, CONVERT(VARBINARY(MAX), REPLICATE(CAST('A' AS VARCHAR(MAX)), 9001)), hierarchyid::Parse('/1/')),
+                    (2, CONVERT(VARBINARY(MAX), REPLICATE(CAST('B' AS VARCHAR(MAX)), 9002)), CAST(NULL AS HIERARCHYID)),
+                    (3, CONVERT(VARBINARY(MAX), REPLICATE(CAST('C' AS VARCHAR(MAX)), 9003)), hierarchyid::Parse('/1/2/3/'))
+            ) AS v(id, filler, node)
+            ORDER BY id
+            """
+            if force_sqlgetdata
+            else """
+            SELECT node
+            FROM (
+                VALUES
+                    (1, hierarchyid::Parse('/1/')),
+                    (2, CAST(NULL AS HIERARCHYID)),
+                    (3, hierarchyid::Parse('/1/2/3/'))
+            ) AS v(id, node)
+            ORDER BY id
+            """
+        )
+
+        expected_rows = cursor.execute(select_sql).fetchall()
+        cursor.execute(select_sql)
+        batch = cursor.arrow_batch(10)
+
+        assert batch.num_rows == 3
+
+        if force_sqlgetdata:
+            assert batch.num_columns == 2
+            assert batch.column(0).type.equals(pa.large_binary())
+            assert batch.column(0).to_pylist() == [row[0] for row in expected_rows]
+            udt_col_index = 1
+        else:
+            assert batch.num_columns == 1
+            udt_col_index = 0
+
+        udt_column = batch.column(udt_col_index)
+        assert udt_column.type.equals(pa.large_binary())
+        assert udt_column.to_pylist() == [row[udt_col_index] for row in expected_rows]
+        assert udt_column.null_count == 1
+
+
 def test_varchar_encoding_arrow_batch(cursor: mssql_python.Cursor):
     """CP1252 exact-boundary VARCHAR values round-trip through arrow_batch."""
     conn = cursor.connection
