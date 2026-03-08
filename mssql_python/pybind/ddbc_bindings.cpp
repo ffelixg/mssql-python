@@ -4405,11 +4405,46 @@ int32_t days_from_civil(int y, int m, int d) {
 SQLRETURN FetchArrowBatch_wrap(
     SqlHandlePtr StatementHandle,
     py::list& capsules,
-    int arrowBatchSize
+    int arrowBatchSize,
+    const std::string& charEncoding = "utf-8"
 ) {
     int fetchSize = arrowBatchSize;
     SQLRETURN ret;
     SQLHSTMT hStmt = StatementHandle->get();
+    const std::string effectiveCharEncoding = GetEffectiveCharDecoding(charEncoding);
+
+    auto appendCharDataToArrowBuffer = [&](ArrowArrayPrivateData& arrowColumnProducer,
+                                           const char* sourceBytes, size_t sourceLen,
+                                           size_t rowIndex) {
+        auto& targetVec = arrowColumnProducer.varData;
+        const uint64_t start = arrowColumnProducer.varVal[rowIndex];
+
+        if (effectiveCharEncoding == "utf-8") {
+            while (targetVec.size() < start + sourceLen) {
+                targetVec.resize(targetVec.size() * 2);
+            }
+            std::memcpy(&targetVec[start], sourceBytes, sourceLen);
+            arrowColumnProducer.varVal[rowIndex + 1] = start + sourceLen;
+            return;
+        }
+
+        try {
+            py::bytes rawBytes(sourceBytes, sourceLen);
+            py::object decoded = rawBytes.attr("decode")(effectiveCharEncoding, "strict");
+            std::string utf8Str = decoded.cast<std::string>();
+
+            while (targetVec.size() < start + utf8Str.size()) {
+                targetVec.resize(targetVec.size() * 2);
+            }
+            std::memcpy(&targetVec[start], utf8Str.data(), utf8Str.size());
+            arrowColumnProducer.varVal[rowIndex + 1] = start + utf8Str.size();
+        } catch (const py::error_already_set& e) {
+            LOG_ERROR("FetchArrowBatch: Failed to decode SQL_C_CHAR data with '%s': %s",
+                      effectiveCharEncoding.c_str(), e.what());
+            throw;
+        }
+    };
+
     // Retrieve column count
     SQLSMALLINT numCols = SQLNumResultCols_wrap(StatementHandle);
     if (numCols <= 0) {
@@ -4951,15 +4986,17 @@ SQLRETURN FetchArrowBatch_wrap(
                     case SQL_CHAR:
                     case SQL_VARCHAR:
                     case SQL_LONGVARCHAR: {
-                        uint64_t fetchBufferSize = columnSize + 1 /* null-termination */;
-                        auto target_vec = &arrowColumnProducer->varData;
-                        auto start = arrowColumnProducer->varVal[idxRowArrow];
-                        while (target_vec->size() < start + dataLen) {
-                            target_vec->resize(target_vec->size() * 2);
-                        }
-
-                        std::memcpy(&(*target_vec)[start], &buffers.charBuffers[idxCol][idxRowSql * fetchBufferSize], dataLen);
-                        arrowColumnProducer->varVal[idxRowArrow + 1] = start + dataLen;
+                        // Same as corresponding case in SQLBindColums
+#if defined(__APPLE__) || defined(__linux__)
+                        uint64_t fetchBufferSize = columnSize * 4 + 1 /*null-terminator*/;
+#else
+                        uint64_t fetchBufferSize = columnSize + 1 /*null-terminator*/;
+#endif
+                        appendCharDataToArrowBuffer(
+                            *arrowColumnProducer,
+                            reinterpret_cast<const char*>(
+                                &buffers.charBuffers[idxCol][idxRowSql * fetchBufferSize]),
+                            static_cast<size_t>(dataLen), idxRowArrow);
                         break;
                     }
                     case SQL_SS_XML:
@@ -5663,7 +5700,10 @@ PYBIND11_MODULE(ddbc_bindings, m) {
     m.def("DDBCSQLFetchAll", &FetchAll_wrap, "Fetch all rows from the result set",
           py::arg("StatementHandle"), py::arg("rows"), py::arg("charEncoding") = "utf-8",
           py::arg("wcharEncoding") = "utf-16le");
-    m.def("DDBCSQLFetchArrowBatch", &FetchArrowBatch_wrap, "Fetch an arrow batch of given length from the result set");
+        m.def("DDBCSQLFetchArrowBatch", &FetchArrowBatch_wrap,
+            "Fetch an arrow batch of given length from the result set",
+            py::arg("StatementHandle"), py::arg("capsules"), py::arg("arrowBatchSize"),
+            py::arg("charEncoding") = "utf-8");
     m.def("DDBCSQLFreeHandle", &SQLFreeHandle_wrap, "Free a handle");
     m.def("DDBCSQLCheckError", &SQLCheckError_Wrap, "Check for driver errors");
     m.def("DDBCSQLGetAllDiagRecords", &SQLGetAllDiagRecords,

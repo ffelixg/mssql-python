@@ -401,3 +401,146 @@ def test_rownumber_interleaved_fetchone_arrow_batch(cursor: mssql_python.Cursor)
     vals = batch.column(0).to_pylist()
     assert vals == list(range(2, N + 1))
     assert cursor.rownumber == 19
+
+
+def test_varchar_encoding_arrow_batch(cursor: mssql_python.Cursor):
+    """CP1252 exact-boundary VARCHAR values round-trip through arrow_batch."""
+    conn = cursor.connection
+    conn.setencoding(encoding="cp1252", ctype=mssql_python.SQL_CHAR)
+    conn.setdecoding(mssql_python.SQL_CHAR, encoding="cp1252", ctype=mssql_python.SQL_CHAR)
+
+    vals_10 = [
+        "café René!",  # exact 10
+        "señor año".ljust(10)[:10],
+        "élève été".ljust(10)[:10],
+        "naïve café".ljust(10)[:10],
+    ]
+    assert all(len(v) == 10 for v in vals_10)
+
+    cursor.execute(
+        """
+        CREATE TABLE #test_arrow_cp1252_boundary (
+            id INT PRIMARY KEY,
+            v VARCHAR(10) COLLATE SQL_Latin1_General_CP1_CI_AS
+        )
+        """
+    )
+    conn.commit()
+
+    for i, val in enumerate(vals_10, start=1):
+        cursor.execute("INSERT INTO #test_arrow_cp1252_boundary (id, v) VALUES (?, ?)", i, val)
+    conn.commit()
+
+    cursor.execute("SELECT v FROM #test_arrow_cp1252_boundary ORDER BY id")
+    batch = cursor.arrow_batch(10)
+    assert batch.num_rows == 4
+    assert batch.column(0).to_pylist() == vals_10
+
+
+def test_nvarchar_sqlgetdata_forced_arrow_batch(cursor: mssql_python.Cursor):
+    """A leading NVARCHAR(MAX) column forces SQLGetData while NVARCHAR(10) still round-trips."""
+    filler_rows = [
+        ("αβγδε " * 900).strip(),
+        ("данные " * 900).strip(),
+        ("漢字かな " * 900).strip(),
+        ("مرحبا " * 900).strip(),
+    ]
+    vals_10 = [
+        "café René!",  # exact 10
+        "señor año".ljust(10)[:10],
+        "élève été".ljust(10)[:10],
+        "naïve café".ljust(10)[:10],
+    ]
+    assert all(len(v) == 10 for v in vals_10)
+    assert all(len(v) > 4000 for v in filler_rows)
+
+    cursor.execute(
+        """
+        CREATE TABLE #test_arrow_nvarchar_sqlgetdata_forced (
+            id INT PRIMARY KEY,
+            filler NVARCHAR(MAX),
+            v NVARCHAR(10)
+        )
+        """
+    )
+    cursor.connection.commit()
+
+    for i, (filler, val) in enumerate(zip(filler_rows, vals_10, strict=True), start=1):
+        cursor.execute(
+            "INSERT INTO #test_arrow_nvarchar_sqlgetdata_forced (id, filler, v) VALUES (?, ?, ?)",
+            i,
+            filler,
+            val,
+        )
+    cursor.connection.commit()
+
+    cursor.execute("SELECT filler, v FROM #test_arrow_nvarchar_sqlgetdata_forced ORDER BY id")
+    batch = cursor.arrow_batch(10)
+    assert batch.num_rows == 4
+    assert batch.column(0).to_pylist() == filler_rows
+    assert batch.column(1).to_pylist() == vals_10
+
+
+def test_varchar_cp1252_arrow_batch_mixed_types_with_nulls(cursor: mssql_python.Cursor):
+    """Concise Arrow version of mixed-type + NULL/empty CP1252 batch fetch."""
+    conn = cursor.connection
+    conn.setencoding(encoding="cp1252", ctype=mssql_python.SQL_CHAR)
+    conn.setdecoding(mssql_python.SQL_CHAR, encoding="cp1252", ctype=mssql_python.SQL_CHAR)
+
+    cursor.execute(
+        """
+        CREATE TABLE #test_arrow_cp1252_mixed (
+            id INT PRIMARY KEY,
+            txt VARCHAR(20) COLLATE SQL_Latin1_General_CP1_CI_AS,
+            score FLOAT NULL
+        )
+        """
+    )
+    conn.commit()
+
+    test_rows = [
+        (1, "café René", 95.5),
+        (2, None, 88.2),
+        (3, "", 76.9),
+        (4, "Größe naïve", None),
+    ]
+    for row in test_rows:
+        cursor.execute(
+            "INSERT INTO #test_arrow_cp1252_mixed (id, txt, score) VALUES (?, ?, ?)", *row
+        )
+    conn.commit()
+
+    cursor.execute("SELECT id, txt, score FROM #test_arrow_cp1252_mixed ORDER BY id")
+    batch = cursor.arrow_batch(10)
+    assert batch.num_rows == 4
+    assert batch.column(0).to_pylist() == [1, 2, 3, 4]
+    assert batch.column(1).to_pylist() == ["café René", None, "", "Größe naïve"]
+    assert batch.column(2).to_pylist() == [95.5, 88.2, 76.9, None]
+
+
+def test_varchar_cp1252_arrow_lob_roundtrip(cursor: mssql_python.Cursor):
+    """Concise Arrow version of CP1252 VARCHAR(MAX) LOB round-trip."""
+    conn = cursor.connection
+    conn.setencoding(encoding="cp1252", ctype=mssql_python.SQL_CHAR)
+    conn.setdecoding(mssql_python.SQL_CHAR, encoding="cp1252", ctype=mssql_python.SQL_CHAR)
+
+    large_data = ("café René señor Müller Größe naïve " * 250).strip()
+    assert len(large_data) > 8000
+
+    cursor.execute(
+        """
+        CREATE TABLE #test_arrow_cp1252_lob (
+            id INT PRIMARY KEY,
+            data VARCHAR(MAX) COLLATE SQL_Latin1_General_CP1_CI_AS
+        )
+        """
+    )
+    conn.commit()
+
+    cursor.execute("INSERT INTO #test_arrow_cp1252_lob (id, data) VALUES (?, ?)", 1, large_data)
+    conn.commit()
+
+    cursor.execute("SELECT data FROM #test_arrow_cp1252_lob WHERE id = 1")
+    batch = cursor.arrow_batch(1)
+    assert batch.num_rows == 1
+    assert batch.column(0).to_pylist() == [large_data]

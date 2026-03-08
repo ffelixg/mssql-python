@@ -2473,8 +2473,15 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
         if not self._has_result_set and self.description:
             self._reset_rownumber()
 
+        char_decoding = self._get_decoding_settings(ddbc_sql_const.SQL_CHAR.value)
+
         capsules = []
-        ret = ddbc_bindings.DDBCSQLFetchArrowBatch(self.hstmt, capsules, max(batch_size, 0))
+        ret = ddbc_bindings.DDBCSQLFetchArrowBatch(
+            self.hstmt,
+            capsules,
+            max(batch_size, 0),
+            char_decoding.get("encoding", "utf-8"),
+        )
         check_error(ddbc_sql_const.SQL_HANDLE_STMT.value, self.hstmt, ret)
 
         batch = pyarrow.RecordBatch._import_from_c_capsule(*capsules)
