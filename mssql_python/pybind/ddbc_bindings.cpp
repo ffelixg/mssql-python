@@ -4740,7 +4740,7 @@ SQLRETURN FetchArrowBatch_wrap(
     SQLULEN numRowsFetched = 0;
     FetchStateGuard fetchStateGuard(hStmt, &numRowsFetched, fetchSize);
 
-    size_t idxRowArrow = 0;
+    int idxRowArrow = 0;
 
     while (idxRowArrow < arrowBatchSize) {
         int spaceLeftInArrowBatch = arrowBatchSize - idxRowArrow;
