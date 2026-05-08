@@ -3606,8 +3606,9 @@ SQLRETURN SQLFetchScroll_wrap(SqlHandlePtr StatementHandle, SQLSMALLINT FetchOri
 // For column in the result set, binds a buffer to retrieve column data
 // TODO: Move to anonymous namespace, since it is not used outside this file
 SQLRETURN SQLBindColums(SQLHSTMT hStmt, ColumnBuffers& buffers, py::list& columnNames,
-                        SQLUSMALLINT numCols, int fetchSize) {
+                        SQLUSMALLINT numCols, int fetchSize, int charCtype = SQL_C_WCHAR) {
     SQLRETURN ret = SQL_SUCCESS;
+    const bool useWideChar = (charCtype == SQL_C_WCHAR);
     // Bind columns based on their data types
     for (SQLUSMALLINT col = 1; col <= numCols; col++) {
         auto columnMeta = columnNames[col - 1].cast<py::dict>();
@@ -3618,32 +3619,27 @@ SQLRETURN SQLBindColums(SQLHSTMT hStmt, ColumnBuffers& buffers, py::list& column
             case SQL_CHAR:
             case SQL_VARCHAR:
             case SQL_LONGVARCHAR: {
-                // TODO: handle variable length data correctly. This logic wont
-                // suffice
                 HandleZeroColumnSizeAtFetch(columnSize);
-                // Use columnSize * 4 + 1 on Linux/macOS to accommodate UTF-8
-                // expansion. The ODBC driver returns UTF-8 for SQL_C_CHAR where
-                // each character can be up to 4 bytes.
+                if (useWideChar) {
+                    // Bind VARCHAR columns as SQL_C_WCHAR so the ODBC driver
+                    // returns UTF-16 data, avoiding code-page decode issues.
+                    uint64_t fetchBufferSize = columnSize + 1 /*null-terminator*/;
+                    buffers.wcharBuffers[col - 1].resize(fetchSize * fetchBufferSize);
+                    ret = SQLBindCol_ptr(
+                        hStmt, col, SQL_C_WCHAR, buffers.wcharBuffers[col - 1].data(),
+                        fetchBufferSize * sizeof(SQLWCHAR), buffers.indicators[col - 1].data());
+                } else {
+                    // Original narrow-char path
 #if defined(__APPLE__) || defined(__linux__)
-                uint64_t fetchBufferSize = columnSize * 4 + 1 /*null-terminator*/;
+                    uint64_t fetchBufferSize = columnSize * 4 + 1 /*null-terminator*/;
 #else
-                uint64_t fetchBufferSize = columnSize + 1 /*null-terminator*/;
+                    uint64_t fetchBufferSize = columnSize + 1 /*null-terminator*/;
 #endif
-                // TODO: For LONGVARCHAR/BINARY types, columnSize is returned as
-                // 2GB-1 by SQLDescribeCol. So fetchBufferSize = 2GB.
-                // fetchSize=1 if columnSize>1GB. So we'll allocate a vector of
-                // size 2GB. If a query fetches multiple (say N) LONG...
-                // columns, we will have allocated multiple (N) 2GB sized
-                // vectors. This will make driver very slow. And if the N is
-                // high enough, we could hit the OS limit for heap memory that
-                // we can allocate, & hence get a std::bad_alloc. The process
-                // could also be killed by OS for consuming too much memory.
-                // Hence this will be revisited in beta to not allocate 2GB+
-                // memory, & use streaming instead
-                buffers.charBuffers[col - 1].resize(fetchSize * fetchBufferSize);
-                ret = SQLBindCol_ptr(hStmt, col, SQL_C_CHAR, buffers.charBuffers[col - 1].data(),
-                                     fetchBufferSize * sizeof(SQLCHAR),
-                                     buffers.indicators[col - 1].data());
+                    buffers.charBuffers[col - 1].resize(fetchSize * fetchBufferSize);
+                    ret = SQLBindCol_ptr(
+                        hStmt, col, SQL_C_CHAR, buffers.charBuffers[col - 1].data(),
+                        fetchBufferSize * sizeof(SQLCHAR), buffers.indicators[col - 1].data());
+                }
                 break;
             }
             case SQL_WCHAR:
@@ -4280,7 +4276,7 @@ SQLRETURN FetchMany_wrap(SqlHandlePtr StatementHandle, py::list& rows, int fetch
     ColumnBuffers buffers(numCols, fetchSize);
 
     // Bind columns
-    ret = SQLBindColums(hStmt, buffers, columnNames, numCols, fetchSize);
+    ret = SQLBindColums(hStmt, buffers, columnNames, numCols, fetchSize, SQL_C_CHAR);
     if (!SQL_SUCCEEDED(ret)) {
         LOG("FetchMany_wrap: Error when binding columns - SQLRETURN=%d", ret);
         return ret;
@@ -4628,7 +4624,7 @@ SQLRETURN FetchArrowBatch_wrap(
 
     if (!hasLobColumns && fetchSize > 0) {
         // Bind columns
-        ret = SQLBindColums(hStmt, buffers, columnNames, numCols, fetchSize);
+        ret = SQLBindColums(hStmt, buffers, columnNames, numCols, fetchSize, SQL_C_WCHAR);
         if (!SQL_SUCCEEDED(ret)) {
             LOG("Error when binding columns");
             return ret;
@@ -4691,20 +4687,7 @@ SQLRETURN FetchArrowBatch_wrap(
                         }
                         case SQL_CHAR:
                         case SQL_VARCHAR:
-                        case SQL_LONGVARCHAR: {
-                            ret = GetDataVar(
-                                hStmt,
-                                idxCol + 1,
-                                SQL_C_CHAR,
-                                buffers.charBuffers[idxCol],
-                                buffers.indicators[idxCol].data()
-                            );
-                            if (!SQL_SUCCEEDED(ret)) {
-                                LOG("Error fetching CHAR LOB for column %d", idxCol + 1);
-                                return ret;
-                            }
-                            break;
-                        }
+                        case SQL_LONGVARCHAR:
                         case SQL_SS_XML:
                         case SQL_WCHAR:
                         case SQL_WVARCHAR:
@@ -4976,22 +4959,7 @@ SQLRETURN FetchArrowBatch_wrap(
                     }
                     case SQL_CHAR:
                     case SQL_VARCHAR:
-                    case SQL_LONGVARCHAR: {
-#if defined(__APPLE__) || defined(__linux__)
-                        uint64_t fetchBufferSize = columnSize * 4 + 1 /*null-terminator*/;
-#else
-                        uint64_t fetchBufferSize = columnSize + 1 /*null-terminator*/;
-#endif
-                        auto target_vec = &arrowColumnProducer->varData;
-                        auto start = arrowColumnProducer->varVal[idxRowArrow];
-                        while (target_vec->size() < start + dataLen) {
-                            target_vec->resize(target_vec->size() * 2);
-                        }
-
-                        std::memcpy(&(*target_vec)[start], &buffers.charBuffers[idxCol][idxRowSql * fetchBufferSize], dataLen);
-                        arrowColumnProducer->varVal[idxRowArrow + 1] = start + dataLen;
-                        break;
-                    }
+                    case SQL_LONGVARCHAR:
                     case SQL_SS_XML:
                     case SQL_WCHAR:
                     case SQL_WVARCHAR:
@@ -5461,7 +5429,7 @@ SQLRETURN FetchAll_wrap(SqlHandlePtr StatementHandle, py::list& rows,
     ColumnBuffers buffers(numCols, fetchSize);
 
     // Bind columns
-    ret = SQLBindColums(hStmt, buffers, columnNames, numCols, fetchSize);
+    ret = SQLBindColums(hStmt, buffers, columnNames, numCols, fetchSize, SQL_C_CHAR);
     if (!SQL_SUCCEEDED(ret)) {
         LOG("FetchAll_wrap: Error when binding columns - SQLRETURN=%d", ret);
         return ret;
